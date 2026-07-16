@@ -40,6 +40,8 @@ class ScheduleController extends Controller
                 'id' => $post->id,
                 'content' => $post->content,
                 'category' => $post->category,
+                'status' => $post->status,
+                'error' => $post->error,
                 'scheduled_at' => $post->scheduled_at->toIso8601String(),
             ]);
 
@@ -49,6 +51,7 @@ class ScheduleController extends Controller
             'categories' => collect(PromptBuilder::POST_CATEGORIES)
                 ->map(fn (string $label, string $slug) => ['slug' => $slug, 'label' => $label])
                 ->values(),
+            'statuses' => ScheduledPost::STATUSES,
         ]);
     }
 
@@ -146,6 +149,7 @@ class ScheduleController extends Controller
                         'generation_id' => $generation->id,
                         'content' => $options[$index],
                         'category' => $categories[$index] ?? null,
+                        'status' => ScheduledPost::STATUS_DRAFT,
                         'scheduled_at' => $scheduledAt,
                     ]);
                 }
@@ -224,13 +228,22 @@ class ScheduleController extends Controller
             ]);
         }
 
+        // Editing content/category/time on an already-approved post requires
+        // re-approval before it's eligible to auto-post again — an in-place
+        // edit right before the scheduled time should never silently publish
+        // unreviewed content.
+        $revertedToDraft = $post->status === ScheduledPost::STATUS_SCHEDULED;
+
         $post->update([
             'content' => $data['content'],
             'category' => $data['category'],
             'scheduled_at' => $scheduledAt,
+            'status' => $revertedToDraft ? ScheduledPost::STATUS_DRAFT : $post->status,
         ]);
 
-        return back();
+        return $revertedToDraft
+            ? back()->with('toast', 'Saved — moved back to Draft since it was already Scheduled. Click Schedule again to re-approve.')
+            : back();
     }
 
     /**
@@ -269,6 +282,10 @@ class ScheduleController extends Controller
             'content' => $result['options'][0] ?? $post->content,
             'category' => $data['category'],
             'generation_id' => $generation->id,
+            // Regenerated content has never been reviewed, so it can't stay
+            // Scheduled — otherwise unreviewed text could get auto-posted.
+            'status' => ScheduledPost::STATUS_DRAFT,
+            'error' => null,
         ]);
 
         return back();
@@ -284,6 +301,56 @@ class ScheduleController extends Controller
         $post->delete();
 
         return back();
+    }
+
+    /**
+     * Approve a draft post so it's eligible to auto-publish to X once its
+     * scheduled time arrives (see App\Console\Commands\PublishDuePosts).
+     */
+    public function schedule(Request $request, ScheduledPost $post): RedirectResponse
+    {
+        abort_unless($post->user_id === $request->user()->id, 403);
+
+        if ($post->scheduled_at->isPast()) {
+            return back()->withErrors([
+                'schedule' => 'This slot is already in the past — edit the time before scheduling.',
+            ]);
+        }
+
+        $post->update(['status' => ScheduledPost::STATUS_SCHEDULED, 'error' => null]);
+
+        return back()->with('toast', 'Post scheduled — it will publish automatically at its time.');
+    }
+
+    /**
+     * Move a post back to Draft so it's no longer eligible to auto-publish.
+     */
+    public function unschedule(Request $request, ScheduledPost $post): RedirectResponse
+    {
+        abort_unless($post->user_id === $request->user()->id, 403);
+
+        $post->update(['status' => ScheduledPost::STATUS_DRAFT, 'error' => null]);
+
+        return back();
+    }
+
+    /**
+     * Schedule every remaining draft post in a given week in one go.
+     */
+    public function scheduleAll(Request $request): RedirectResponse
+    {
+        $data = $request->validate(['week_start' => ['required', 'date']]);
+
+        $weekStart = $this->resolveWeekStart($data['week_start']);
+        $weekEnd = $weekStart->copy()->endOfWeek(Carbon::SUNDAY);
+
+        $request->user()->scheduledPosts()
+            ->whereBetween('scheduled_at', [$weekStart, $weekEnd])
+            ->where('status', ScheduledPost::STATUS_DRAFT)
+            ->where('scheduled_at', '>', now())
+            ->update(['status' => ScheduledPost::STATUS_SCHEDULED, 'error' => null]);
+
+        return back()->with('toast', 'All draft posts this week are now scheduled.');
     }
 
     private function resolveWeekStart(?string $date): Carbon

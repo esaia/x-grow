@@ -24,11 +24,14 @@ class ConnectExtensionController extends Controller
                 'created_at' => $token->created_at?->toDayDateTimeString(),
             ]);
 
+        $xAccount = $request->user()->xAccount;
+
         return Inertia::render('connect', [
             'tokens' => $tokens,
             'apiBaseUrl' => rtrim(config('app.url'), '/').'/api',
             // Shown only once, right after creation.
             'newToken' => $request->session()->get('extension_token'),
+            'xAccount' => $xAccount ? ['username' => $xAccount->username] : null,
         ]);
     }
 

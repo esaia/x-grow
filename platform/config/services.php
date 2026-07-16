@@ -41,4 +41,12 @@ return [
         'base_url' => env('ANTHROPIC_BASE_URL', 'https://api.anthropic.com'),
     ],
 
+    // X (Twitter) OAuth2 — used by ConnectXController and XPostingService to
+    // publish scheduled posts on the user's behalf.
+    'x' => [
+        'client_id' => env('X_CLIENT_ID'),
+        'client_secret' => env('X_CLIENT_SECRET'),
+        'redirect_uri' => env('X_REDIRECT_URI'),
+    ],
+
 ];

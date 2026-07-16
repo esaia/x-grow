@@ -1,5 +1,7 @@
 import { Head, router, useForm } from '@inertiajs/react';
 import {
+    CalendarCheck,
+    CalendarX,
     ChevronLeft,
     ChevronRight,
     RefreshCw,
@@ -43,12 +45,23 @@ type ScheduledPost = {
     id: number;
     content: string;
     category: string | null;
+    status: string;
+    error: string | null;
     scheduled_at: string;
 };
 
 type Category = {
     slug: string;
     label: string;
+};
+
+// Colors for the status pill — mirrors CATEGORY_COLORS below, kept in sync
+// by hand with backend ScheduledPost::STATUSES slugs.
+const STATUS_COLORS: Record<string, string> = {
+    draft: 'bg-muted text-muted-foreground',
+    scheduled: 'bg-emerald-600 text-white',
+    posted: 'bg-blue-600 text-white',
+    failed: 'bg-red-600 text-white',
 };
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -72,12 +85,12 @@ const CHIP_HEIGHT = 52;
 
 function hourLabel(hour: number): string {
     if (hour === 0) {
-return '12 AM';
-}
+        return '12 AM';
+    }
 
     if (hour === 12) {
-return '12 PM';
-}
+        return '12 PM';
+    }
 
     return hour > 12 ? `${hour - 12} PM` : `${hour} AM`;
 }
@@ -224,10 +237,12 @@ function PatternOption({
 function CalendarChip({
     post,
     categories,
+    statuses,
     onOpen,
 }: {
     post: ScheduledPost;
     categories: Category[];
+    statuses: Record<string, string>;
     onOpen: () => void;
 }) {
     const color = post.category
@@ -237,9 +252,9 @@ function CalendarChip({
         categories.find((c) => c.slug === post.category)?.label ??
         post.category ??
         undefined;
+    const statusLabel = statuses[post.status] ?? post.status;
     const [hourStr, minuteStr] = post.scheduled_at.slice(11, 16).split(':');
-    const top =
-        (Number(hourStr) + Number(minuteStr) / 60) * ROW_HEIGHT;
+    const top = (Number(hourStr) + Number(minuteStr) / 60) * ROW_HEIGHT;
 
     return (
         <Tooltip>
@@ -253,20 +268,38 @@ function CalendarChip({
                         color,
                     )}
                 >
-                    <div className="text-[10px] font-semibold whitespace-nowrap opacity-90">
-                        {formatTime(post.scheduled_at)}
+                    <div className="flex items-center justify-between gap-1">
+                        <span className="text-[10px] font-semibold whitespace-nowrap opacity-90">
+                            {formatTime(post.scheduled_at)}
+                        </span>
+                        <span
+                            className={cn(
+                                'rounded-full px-1.5 py-px text-[9px] font-bold tracking-wide whitespace-nowrap uppercase',
+                                STATUS_COLORS[post.status] ??
+                                    FALLBACK_CATEGORY_COLOR,
+                            )}
+                        >
+                            {statusLabel}
+                        </span>
                     </div>
                     <div className="line-clamp-2 text-[11px] leading-tight font-medium">
                         {post.content}
                     </div>
                 </button>
             </TooltipTrigger>
-            <TooltipContent side="right" className="max-w-xs whitespace-pre-wrap">
+            <TooltipContent
+                side="right"
+                className="max-w-xs whitespace-pre-wrap"
+            >
                 <p className="mb-1 font-semibold">
                     {formatTime(post.scheduled_at)}
                     {categoryLabel ? ` · ${categoryLabel}` : ''}
+                    {` · ${statusLabel}`}
                 </p>
                 <p>{post.content}</p>
+                {post.status === 'failed' && post.error && (
+                    <p className="mt-1 text-destructive">{post.error}</p>
+                )}
             </TooltipContent>
         </Tooltip>
     );
@@ -276,10 +309,12 @@ export default function Schedule({
     weekStart,
     posts,
     categories,
+    statuses,
 }: {
     weekStart: string;
     posts: ScheduledPost[];
     categories: Category[];
+    statuses: Record<string, string>;
 }) {
     const form = useForm({
         week_start: weekStart,
@@ -289,9 +324,7 @@ export default function Schedule({
         categories: categories.map((c) => c.slug),
     });
 
-    const [editingPost, setEditingPost] = useState<ScheduledPost | null>(
-        null,
-    );
+    const [editingPost, setEditingPost] = useState<ScheduledPost | null>(null);
     const [draftContent, setDraftContent] = useState('');
     const [draftCategory, setDraftCategory] = useState('');
     const [draftTime, setDraftTime] = useState('');
@@ -299,6 +332,9 @@ export default function Schedule({
     const [saveError, setSaveError] = useState<string | null>(null);
     const [regenerating, setRegenerating] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
+    const [draftStatus, setDraftStatus] = useState('draft');
+    const [scheduling, setScheduling] = useState(false);
+    const [schedulingAll, setSchedulingAll] = useState(false);
 
     // "Today" and the live now-line are computed client-side only — the
     // server and browser clocks/timezones can disagree, and computing this
@@ -312,9 +348,7 @@ export default function Schedule({
         const update = () => {
             const now = new Date();
             setTodayKey(toDateKey(now));
-            setNowOffset(
-                (now.getHours() + now.getMinutes() / 60) * ROW_HEIGHT,
-            );
+            setNowOffset((now.getHours() + now.getMinutes() / 60) * ROW_HEIGHT);
         };
 
         update();
@@ -336,7 +370,9 @@ export default function Schedule({
             return;
         }
 
-        const hours = posts.map((post) => Number(post.scheduled_at.slice(11, 13)));
+        const hours = posts.map((post) =>
+            Number(post.scheduled_at.slice(11, 13)),
+        );
         const earliestHour = hours.length > 0 ? Math.min(...hours) : 8;
         scrollRef.current.scrollTop = earliestHour * ROW_HEIGHT;
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -353,9 +389,7 @@ export default function Schedule({
 
         form.setData(
             'categories',
-            isEnabled
-                ? current.filter((c) => c !== slug)
-                : [...current, slug],
+            isEnabled ? current.filter((c) => c !== slug) : [...current, slug],
         );
     };
 
@@ -392,6 +426,7 @@ export default function Schedule({
         setDraftContent(post.content);
         setDraftCategory(post.category ?? categories[0]?.slug ?? '');
         setDraftTime(post.scheduled_at.slice(11, 16));
+        setDraftStatus(post.status);
         setSaveError(null);
     };
 
@@ -433,16 +468,63 @@ export default function Schedule({
             {
                 preserveScroll: true,
                 onSuccess: (page) => {
-                    const updated = (
-                        page.props.posts as ScheduledPost[]
-                    ).find((p) => p.id === editingPost.id);
+                    const updated = (page.props.posts as ScheduledPost[]).find(
+                        (p) => p.id === editingPost.id,
+                    );
 
                     if (updated) {
                         setDraftContent(updated.content);
                         setDraftCategory(updated.category ?? draftCategory);
+                        setDraftStatus(updated.status);
                     }
                 },
                 onFinish: () => setRegenerating(false),
+            },
+        );
+    };
+
+    const scheduleOne = () => {
+        if (!editingPost) {
+            return;
+        }
+
+        setScheduling(true);
+        router.post(
+            `/schedule/posts/${editingPost.id}/schedule`,
+            {},
+            {
+                preserveScroll: true,
+                onSuccess: () => setDraftStatus('scheduled'),
+                onFinish: () => setScheduling(false),
+            },
+        );
+    };
+
+    const unscheduleOne = () => {
+        if (!editingPost) {
+            return;
+        }
+
+        setScheduling(true);
+        router.post(
+            `/schedule/posts/${editingPost.id}/unschedule`,
+            {},
+            {
+                preserveScroll: true,
+                onSuccess: () => setDraftStatus('draft'),
+                onFinish: () => setScheduling(false),
+            },
+        );
+    };
+
+    const scheduleAllDrafts = () => {
+        setSchedulingAll(true);
+        router.post(
+            '/schedule/schedule-all',
+            { week_start: weekStart },
+            {
+                preserveScroll: true,
+                onFinish: () => setSchedulingAll(false),
             },
         );
     };
@@ -466,9 +548,7 @@ export default function Schedule({
     const postsByDay = DAY_LABELS.map((_, i) => {
         const key = toDateKey(toLocalDate(weekStart, i));
 
-        return posts.filter(
-            (post) => post.scheduled_at.slice(0, 10) === key,
-        );
+        return posts.filter((post) => post.scheduled_at.slice(0, 10) === key);
     });
 
     return (
@@ -519,9 +599,7 @@ export default function Schedule({
                                 className="flex flex-wrap items-end gap-4"
                             >
                                 <div className="grid gap-1.5">
-                                    <Label htmlFor="range_start">
-                                        From
-                                    </Label>
+                                    <Label htmlFor="range_start">From</Label>
                                     <Select
                                         value={form.data.range_start}
                                         onValueChange={(value) =>
@@ -579,9 +657,7 @@ export default function Schedule({
                                 </div>
 
                                 <div className="grid w-36 gap-1.5">
-                                    <Label>
-                                        Per day · {form.data.per_day}
-                                    </Label>
+                                    <Label>Per day · {form.data.per_day}</Label>
                                     <Slider
                                         min={1}
                                         max={6}
@@ -596,9 +672,7 @@ export default function Schedule({
 
                                 <Button
                                     type="submit"
-                                    disabled={
-                                        form.processing || weekHasPosts
-                                    }
+                                    disabled={form.processing || weekHasPosts}
                                     title={
                                         weekHasPosts
                                             ? 'This week already has posts — edit or delete them below, or switch weeks.'
@@ -613,6 +687,26 @@ export default function Schedule({
                                     Generate week
                                 </Button>
                             </form>
+
+                            {weekHasPosts && (
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={
+                                        schedulingAll ||
+                                        !posts.some((p) => p.status === 'draft')
+                                    }
+                                    onClick={scheduleAllDrafts}
+                                    title="Schedule every remaining draft post this week so it auto-publishes at its time"
+                                >
+                                    {schedulingAll ? (
+                                        <Spinner className="size-4" />
+                                    ) : (
+                                        <CalendarCheck className="size-4" />
+                                    )}
+                                    Schedule all drafts
+                                </Button>
+                            )}
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
@@ -651,8 +745,7 @@ export default function Schedule({
                         <div className="grid flex-1 grid-cols-7">
                             {DAY_LABELS.map((label, i) => {
                                 const date = toLocalDate(weekStart, i);
-                                const isToday =
-                                    todayKey === toDateKey(date);
+                                const isToday = todayKey === toDateKey(date);
 
                                 return (
                                     <div
@@ -678,7 +771,10 @@ export default function Schedule({
                     </div>
 
                     {/* Scrollable 24-hour grid. */}
-                    <div ref={scrollRef} className="flex max-h-[65vh] overflow-y-auto">
+                    <div
+                        ref={scrollRef}
+                        className="flex max-h-[65vh] overflow-y-auto"
+                    >
                         <div className="w-14 shrink-0">
                             {HOURS.map((hour) => (
                                 <div
@@ -718,6 +814,7 @@ export default function Schedule({
                                                 key={post.id}
                                                 post={post}
                                                 categories={categories}
+                                                statuses={statuses}
                                                 onOpen={() => openPost(post)}
                                             />
                                         ))}
@@ -748,11 +845,24 @@ export default function Schedule({
                         <div className="flex flex-col gap-5">
                             <div className="flex items-center justify-between">
                                 <span className="rounded-full bg-primary px-4 py-1.5 text-xs font-bold whitespace-nowrap text-primary-foreground">
-                                    {formatDayBadge(
-                                        editingPost.scheduled_at,
+                                    {formatDayBadge(editingPost.scheduled_at)}
+                                </span>
+                                <span
+                                    className={cn(
+                                        'rounded-full px-3 py-1 text-xs font-bold tracking-wide whitespace-nowrap uppercase',
+                                        STATUS_COLORS[draftStatus] ??
+                                            FALLBACK_CATEGORY_COLOR,
                                     )}
+                                >
+                                    {statuses[draftStatus] ?? draftStatus}
                                 </span>
                             </div>
+
+                            {draftStatus === 'failed' && editingPost.error && (
+                                <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                                    {editingPost.error}
+                                </p>
+                            )}
 
                             <h2 className="text-xl font-bold">Edit tweet</h2>
 
@@ -798,13 +908,10 @@ export default function Schedule({
                                             key={category.slug}
                                             category={category}
                                             selected={
-                                                draftCategory ===
-                                                category.slug
+                                                draftCategory === category.slug
                                             }
                                             onSelect={() =>
-                                                setDraftCategory(
-                                                    category.slug,
-                                                )
+                                                setDraftCategory(category.slug)
                                             }
                                         />
                                     ))}
@@ -828,6 +935,49 @@ export default function Schedule({
                                     className="min-h-32"
                                 />
                             </div>
+
+                            {draftStatus !== 'posted' && (
+                                <Button
+                                    type="button"
+                                    variant={
+                                        draftStatus === 'scheduled'
+                                            ? 'outline'
+                                            : 'default'
+                                    }
+                                    disabled={
+                                        scheduling ||
+                                        (draftStatus !== 'scheduled' &&
+                                            new Date(
+                                                editingPost.scheduled_at,
+                                            ) <= new Date())
+                                    }
+                                    onClick={
+                                        draftStatus === 'scheduled'
+                                            ? unscheduleOne
+                                            : scheduleOne
+                                    }
+                                    title={
+                                        draftStatus !== 'scheduled' &&
+                                        new Date(editingPost.scheduled_at) <=
+                                            new Date()
+                                            ? 'This slot is already in the past — edit the time first.'
+                                            : undefined
+                                    }
+                                >
+                                    {scheduling ? (
+                                        <Spinner className="size-4" />
+                                    ) : draftStatus === 'scheduled' ? (
+                                        <CalendarX className="size-4" />
+                                    ) : (
+                                        <CalendarCheck className="size-4" />
+                                    )}
+                                    {draftStatus === 'scheduled'
+                                        ? 'Unschedule'
+                                        : draftStatus === 'failed'
+                                          ? 'Retry'
+                                          : 'Schedule'}
+                                </Button>
+                            )}
 
                             <div className="flex items-center gap-2">
                                 <Button
@@ -862,9 +1012,7 @@ export default function Schedule({
                                     }
                                     onClick={saveChanges}
                                 >
-                                    {saving && (
-                                        <Spinner className="size-4" />
-                                    )}
+                                    {saving && <Spinner className="size-4" />}
                                     Save changes
                                 </Button>
                             </div>

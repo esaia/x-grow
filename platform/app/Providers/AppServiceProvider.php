@@ -31,6 +31,10 @@ class AppServiceProvider extends ServiceProvider
         // framework default (userland priority beats the built-in).
         if ($this->app->runningInConsole()) {
             DevCommands::artisan('serve --host=localhost --port=8001', 'server');
+
+            // Drives the per-minute schedule:publish-due-posts run (see
+            // routes/console.php) so scheduled posts auto-publish in local dev.
+            DevCommands::artisan('schedule:work', 'schedule');
         }
     }
 

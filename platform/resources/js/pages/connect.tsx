@@ -1,4 +1,4 @@
-import { Head, router, useForm } from '@inertiajs/react';
+import { Head, router, useForm, usePage } from '@inertiajs/react';
 import { useState } from 'react';
 import Heading from '@/components/heading';
 import { Button } from '@/components/ui/button';
@@ -17,15 +17,22 @@ type Token = {
     created_at: string | null;
 };
 
+type XAccount = {
+    username: string | null;
+};
+
 export default function Connect({
     tokens,
     apiBaseUrl,
     newToken,
+    xAccount,
 }: {
     tokens: Token[];
     apiBaseUrl: string;
     newToken: string | null;
+    xAccount: XAccount | null;
 }) {
+    const { errors } = usePage().props as { errors?: { x?: string } };
     const form = useForm({ name: 'Chrome extension' });
     const [copied, setCopied] = useState<string | null>(null);
 
@@ -43,6 +50,10 @@ export default function Connect({
             setCopied(key);
             setTimeout(() => setCopied(null), 1500);
         });
+    };
+
+    const disconnectX = () => {
+        router.delete('/connect/x', { preserveScroll: true });
     };
 
     return (
@@ -81,6 +92,49 @@ export default function Connect({
 
                     <Card>
                         <CardHeader>
+                            <CardTitle>Connect your X account</CardTitle>
+                            <CardDescription>
+                                Required to auto-publish Scheduled posts from
+                                the Weekly Schedule at their scheduled time.
+                                Without this, posts you approve just stay
+                                Scheduled and won't go out on their own.
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent className="flex flex-col gap-3">
+                            {errors?.x && (
+                                <p className="text-sm text-destructive">
+                                    {errors.x}
+                                </p>
+                            )}
+                            {xAccount ? (
+                                <div className="flex items-center justify-between gap-4">
+                                    <p className="text-sm">
+                                        Connected as{' '}
+                                        <span className="font-medium">
+                                            @{xAccount.username}
+                                        </span>
+                                    </p>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={disconnectX}
+                                    >
+                                        Disconnect
+                                    </Button>
+                                </div>
+                            ) : (
+                                <Button asChild>
+                                    <a href="/connect/x/redirect">
+                                        Connect X account
+                                    </a>
+                                </Button>
+                            )}
+                        </CardContent>
+                    </Card>
+
+                    <Card>
+                        <CardHeader>
                             <CardTitle>How to connect</CardTitle>
                         </CardHeader>
                         <CardContent className="grid grid-cols-1 gap-4 text-sm">
@@ -88,8 +142,8 @@ export default function Connect({
                                 <li>Click “Generate token” below.</li>
                                 <li>Copy the token that appears.</li>
                                 <li>
-                                    Open the X-Grow extension in Chrome and paste
-                                    the token into the popup.
+                                    Open the X-Grow extension in Chrome and
+                                    paste the token into the popup.
                                 </li>
                             </ol>
                             <div className="grid grid-cols-1 gap-1">
@@ -104,9 +158,7 @@ export default function Connect({
                                         type="button"
                                         variant="outline"
                                         size="sm"
-                                        onClick={() =>
-                                            copy(apiBaseUrl, 'url')
-                                        }
+                                        onClick={() => copy(apiBaseUrl, 'url')}
                                     >
                                         {copied === 'url' ? 'Copied!' : 'Copy'}
                                     </Button>

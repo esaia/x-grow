@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class Generation extends Model
 {
     public const TYPE_REPLY = 'reply';
+
     public const TYPE_POST = 'post';
 
     protected $fillable = [

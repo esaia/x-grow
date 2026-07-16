@@ -197,7 +197,10 @@ class PromptBuilder
             "account owner.\n\n".
             "Write them in this exact order, one post per numbered style below:\n{$list}\n\n".
             'Each post must be under 280 characters, able to stand on its own, earn likes/replies/reposts, and '.
-            'genuinely fit its assigned style — do not blend styles or repeat the same idea across posts.';
+            "genuinely fit its assigned style — do not blend styles or repeat the same idea across posts.\n\n".
+            'The style name (e.g. "Hot Take", "Tip / Value") is for your reference only, never for the reader — '.
+            'do not begin a post with its style name or category as a label or prefix (e.g. never start a post '.
+            'with "tip:", "hot take:", "question:", or similar).';
     }
 
     private function categoryGuidance(string $category): string
@@ -205,8 +208,8 @@ class PromptBuilder
         return match ($category) {
             'question' => $this->engagementQuestionGuidance(),
             'story' => 'Tell a short, concrete story or lesson from real experience.',
-            'opinion' => 'Share a punchy, defensible hot take or contrarian opinion.',
-            'tip' => 'Give one specific, actionable tip the reader can use today.',
+            'opinion' => 'Share a punchy, defensible contrarian point of view.',
+            'tip' => 'Give one specific, actionable piece of advice the reader can use today.',
             'promo' => "Naturally mention what the owner is building or working on, using their profile's "
                 .'projects/links when relevant — confident, not salesy.',
             default => 'Write a standalone post that fits the owner\'s usual topics.',

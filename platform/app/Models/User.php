@@ -65,4 +65,9 @@ class User extends Authenticatable implements PasskeyUser
     {
         return $this->hasMany(ScheduledPost::class);
     }
+
+    public function xAccount(): HasOne
+    {
+        return $this->hasOne(XAccount::class);
+    }
 }
