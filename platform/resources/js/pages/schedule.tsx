@@ -874,77 +874,137 @@ export default function Schedule({
                                 </p>
                             )}
 
-                            <h2 className="text-xl font-bold">Edit tweet</h2>
+                            <h2 className="text-xl font-bold">
+                                {draftStatus === 'posted'
+                                    ? 'Posted tweet'
+                                    : 'Edit tweet'}
+                            </h2>
 
-                            <div className="grid gap-1.5">
-                                <Label className="text-xs tracking-wide text-muted-foreground uppercase">
-                                    Time
-                                </Label>
-                                <Select
-                                    value={draftTime}
-                                    onValueChange={(value) => {
-                                        setDraftTime(value);
-                                        setSaveError(null);
-                                    }}
-                                >
-                                    <SelectTrigger className="w-full">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent className="max-h-72">
-                                        {START_TIME_OPTIONS.map((option) => (
-                                            <SelectItem
-                                                key={option.value}
-                                                value={option.value}
-                                            >
-                                                {option.label}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
-                                {saveError && (
-                                    <p className="text-xs text-destructive">
-                                        {saveError}
-                                    </p>
-                                )}
-                            </div>
+                            {draftStatus === 'posted' ? (
+                                <>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                            Time
+                                        </Label>
+                                        <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+                                            {formatTime(
+                                                editingPost.scheduled_at,
+                                            )}
+                                        </p>
+                                    </div>
 
-                            <div className="grid gap-1.5">
-                                <Label className="text-xs tracking-wide text-muted-foreground uppercase">
-                                    Pattern
-                                </Label>
-                                <div className="flex flex-wrap gap-2">
-                                    {categories.map((category) => (
-                                        <PatternOption
-                                            key={category.slug}
-                                            category={category}
-                                            selected={
-                                                draftCategory === category.slug
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                            Pattern
+                                        </Label>
+                                        <span
+                                            className={cn(
+                                                'w-fit rounded-full px-4 py-2 text-sm font-semibold whitespace-nowrap',
+                                                editingPost.category
+                                                    ? (CATEGORY_COLORS[
+                                                          editingPost.category
+                                                      ] ??
+                                                          FALLBACK_CATEGORY_COLOR)
+                                                    : FALLBACK_CATEGORY_COLOR,
+                                            )}
+                                        >
+                                            {categories.find(
+                                                (c) =>
+                                                    c.slug ===
+                                                    editingPost.category,
+                                            )?.label ??
+                                                editingPost.category ??
+                                                'Uncategorized'}
+                                        </span>
+                                    </div>
+
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                            Content
+                                        </Label>
+                                        <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm whitespace-pre-wrap">
+                                            {editingPost.content}
+                                        </p>
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                            Time
+                                        </Label>
+                                        <Select
+                                            value={draftTime}
+                                            onValueChange={(value) => {
+                                                setDraftTime(value);
+                                                setSaveError(null);
+                                            }}
+                                        >
+                                            <SelectTrigger className="w-full">
+                                                <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent className="max-h-72">
+                                                {START_TIME_OPTIONS.map(
+                                                    (option) => (
+                                                        <SelectItem
+                                                            key={option.value}
+                                                            value={option.value}
+                                                        >
+                                                            {option.label}
+                                                        </SelectItem>
+                                                    ),
+                                                )}
+                                            </SelectContent>
+                                        </Select>
+                                        {saveError && (
+                                            <p className="text-xs text-destructive">
+                                                {saveError}
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                            Pattern
+                                        </Label>
+                                        <div className="flex flex-wrap gap-2">
+                                            {categories.map((category) => (
+                                                <PatternOption
+                                                    key={category.slug}
+                                                    category={category}
+                                                    selected={
+                                                        draftCategory ===
+                                                        category.slug
+                                                    }
+                                                    onSelect={() =>
+                                                        setDraftCategory(
+                                                            category.slug,
+                                                        )
+                                                    }
+                                                />
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="grid gap-1.5">
+                                        <div className="flex items-center justify-between">
+                                            <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                                Content
+                                            </Label>
+                                            <span className="text-xs text-muted-foreground">
+                                                {draftContent.length}/280
+                                            </span>
+                                        </div>
+                                        <Textarea
+                                            value={draftContent}
+                                            onChange={(e) =>
+                                                setDraftContent(e.target.value)
                                             }
-                                            onSelect={() =>
-                                                setDraftCategory(category.slug)
-                                            }
+                                            className="min-h-32"
                                         />
-                                    ))}
-                                </div>
-                            </div>
-
-                            <div className="grid gap-1.5">
-                                <div className="flex items-center justify-between">
-                                    <Label className="text-xs tracking-wide text-muted-foreground uppercase">
-                                        Content
-                                    </Label>
-                                    <span className="text-xs text-muted-foreground">
-                                        {draftContent.length}/280
-                                    </span>
-                                </div>
-                                <Textarea
-                                    value={draftContent}
-                                    onChange={(e) =>
-                                        setDraftContent(e.target.value)
-                                    }
-                                    className="min-h-32"
-                                />
-                            </div>
+                                    </div>
+                                </>
+                            )}
 
                             {draftStatus !== 'posted' && (
                                 <Button
@@ -1000,31 +1060,38 @@ export default function Schedule({
                                 >
                                     <Trash2 className="size-4" />
                                 </Button>
-                                <Button
-                                    type="button"
-                                    variant="outline"
-                                    className="flex-1"
-                                    disabled={regenerating}
-                                    onClick={regenerate}
-                                >
-                                    {regenerating ? (
-                                        <Spinner className="size-4" />
-                                    ) : (
-                                        <RefreshCw className="size-4" />
-                                    )}
-                                    Re-generate
-                                </Button>
-                                <Button
-                                    type="button"
-                                    className="flex-1"
-                                    disabled={
-                                        saving || draftContent.trim() === ''
-                                    }
-                                    onClick={saveChanges}
-                                >
-                                    {saving && <Spinner className="size-4" />}
-                                    Save changes
-                                </Button>
+                                {draftStatus !== 'posted' && (
+                                    <>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            className="flex-1"
+                                            disabled={regenerating}
+                                            onClick={regenerate}
+                                        >
+                                            {regenerating ? (
+                                                <Spinner className="size-4" />
+                                            ) : (
+                                                <RefreshCw className="size-4" />
+                                            )}
+                                            Re-generate
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            className="flex-1"
+                                            disabled={
+                                                saving ||
+                                                draftContent.trim() === ''
+                                            }
+                                            onClick={saveChanges}
+                                        >
+                                            {saving && (
+                                                <Spinner className="size-4" />
+                                            )}
+                                            Save changes
+                                        </Button>
+                                    </>
+                                )}
                             </div>
                         </div>
                     )}
