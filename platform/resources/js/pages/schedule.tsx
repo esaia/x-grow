@@ -1,0 +1,894 @@
+import { Head, router, useForm } from '@inertiajs/react';
+import {
+    ChevronLeft,
+    ChevronRight,
+    RefreshCw,
+    Sparkles,
+    Trash2,
+} from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import Heading from '@/components/heading';
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Dialog, DialogContent } from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
+import { Slider } from '@/components/ui/slider';
+import { Spinner } from '@/components/ui/spinner';
+import { Textarea } from '@/components/ui/textarea';
+import { cn } from '@/lib/utils';
+
+type ScheduledPost = {
+    id: number;
+    content: string;
+    category: string | null;
+    scheduled_at: string;
+};
+
+type Category = {
+    slug: string;
+    label: string;
+};
+
+const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+// Rounded, colorful pill per category — matches the legend/badge colors
+// backend PromptBuilder::POST_CATEGORIES slugs map to.
+const CATEGORY_COLORS: Record<string, string> = {
+    question: 'bg-red-500 text-white',
+    story: 'bg-blue-500 text-white',
+    opinion: 'bg-violet-500 text-white',
+    tip: 'bg-emerald-500 text-white',
+    promo: 'bg-pink-500 text-white',
+};
+
+const FALLBACK_CATEGORY_COLOR = 'bg-muted text-muted-foreground';
+
+// Calendar grid geometry: 24 hourly rows, each ROW_HEIGHT px tall.
+const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
+const ROW_HEIGHT = 56;
+const CHIP_HEIGHT = 46;
+
+function hourLabel(hour: number): string {
+    if (hour === 0) {
+return '12 AM';
+}
+
+    if (hour === 12) {
+return '12 PM';
+}
+
+    return hour > 12 ? `${hour - 12} PM` : `${hour} AM`;
+}
+
+// 15-minute increments across the day, e.g. "12:00 AM", "12:15 AM", ... "11:45 PM".
+const START_TIME_OPTIONS = Array.from({ length: 96 }, (_, i) => {
+    const totalMinutes = i * 15;
+    const hour = Math.floor(totalMinutes / 60);
+    const minute = totalMinutes % 60;
+    const period = hour >= 12 ? 'PM' : 'AM';
+    const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+    const value = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    const label = `${hour12}:${String(minute).padStart(2, '0')} ${period}`;
+
+    return { value, label };
+});
+
+function toLocalDate(dateStr: string, offsetDays: number): Date {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    date.setDate(date.getDate() + offsetDays);
+
+    return date;
+}
+
+function toDateKey(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function mondayOf(date: Date): Date {
+    const monday = new Date(date);
+    const day = monday.getDay();
+    monday.setDate(monday.getDate() + (day === 0 ? -6 : 1 - day));
+
+    return monday;
+}
+
+// scheduled_at is a wall-clock time the user picked (e.g. "9:00 AM"), not a
+// real instant — read the hour/minute straight out of the string instead of
+// going through Date/timeZone conversion, which would shift it around.
+function formatTime(scheduledAt: string): string {
+    const [hourStr, minuteStr] = scheduledAt.slice(11, 16).split(':');
+    const hour = Number(hourStr);
+    const period = hour >= 12 ? 'PM' : 'AM';
+    const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+
+    return `${hour12}:${minuteStr} ${period}`;
+}
+
+function formatWeekRange(weekStart: string): string {
+    const start = toLocalDate(weekStart, 0);
+    const end = toLocalDate(weekStart, 6);
+    const startLabel = start.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+    });
+    const endLabel = end.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+    });
+
+    return `${startLabel} – ${endLabel}`;
+}
+
+// e.g. "MONDAY · JUL 13" — used as the modal's day badge.
+function formatDayBadge(scheduledAt: string): string {
+    const [year, month, day] = scheduledAt.slice(0, 10).split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    const weekday = date
+        .toLocaleDateString('en-US', { weekday: 'long' })
+        .toUpperCase();
+    const monthDay = date
+        .toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        .toUpperCase();
+
+    return `${weekday} · ${monthDay}`;
+}
+
+// Clicking a legend pill excludes/includes that category from the next
+// "Generate week" call, so the user can turn off angles they'd rather write
+// themselves (e.g. "Share Your Work") for a given week.
+function LegendToggle({
+    category,
+    active,
+    onToggle,
+}: {
+    category: Category;
+    active: boolean;
+    onToggle: () => void;
+}) {
+    const color = CATEGORY_COLORS[category.slug] ?? FALLBACK_CATEGORY_COLOR;
+
+    return (
+        <button
+            type="button"
+            onClick={onToggle}
+            title={
+                active
+                    ? 'Click to exclude from generation'
+                    : 'Click to include in generation'
+            }
+            className={cn(
+                'cursor-pointer rounded-full px-2.5 py-0.5 text-xs font-semibold whitespace-nowrap transition-opacity',
+                active
+                    ? color
+                    : 'bg-muted text-muted-foreground opacity-50 hover:opacity-75',
+            )}
+        >
+            {category.label}
+        </button>
+    );
+}
+
+// A single selectable pattern option inside the edit modal.
+function PatternOption({
+    category,
+    selected,
+    onSelect,
+}: {
+    category: Category;
+    selected: boolean;
+    onSelect: () => void;
+}) {
+    const color = CATEGORY_COLORS[category.slug] ?? FALLBACK_CATEGORY_COLOR;
+
+    return (
+        <button
+            type="button"
+            onClick={onSelect}
+            className={cn(
+                'cursor-pointer rounded-full border px-4 py-2 text-sm font-semibold whitespace-nowrap transition-colors',
+                selected
+                    ? cn(color, 'border-transparent')
+                    : 'border-border bg-transparent text-muted-foreground hover:bg-muted',
+            )}
+        >
+            {category.label}
+        </button>
+    );
+}
+
+// A single scheduled post rendered at its real time slot on the calendar.
+function CalendarChip({
+    post,
+    categories,
+    onOpen,
+}: {
+    post: ScheduledPost;
+    categories: Category[];
+    onOpen: () => void;
+}) {
+    const color = post.category
+        ? (CATEGORY_COLORS[post.category] ?? FALLBACK_CATEGORY_COLOR)
+        : FALLBACK_CATEGORY_COLOR;
+    const categoryLabel =
+        categories.find((c) => c.slug === post.category)?.label ??
+        post.category ??
+        undefined;
+    const [hourStr, minuteStr] = post.scheduled_at.slice(11, 16).split(':');
+    const top =
+        (Number(hourStr) + Number(minuteStr) / 60) * ROW_HEIGHT;
+
+    return (
+        <button
+            type="button"
+            onClick={onOpen}
+            title={categoryLabel}
+            style={{ top, height: CHIP_HEIGHT }}
+            className={cn(
+                'absolute inset-x-1 cursor-pointer overflow-hidden rounded-md px-2 py-1 text-left shadow-sm transition-transform hover:z-10 hover:scale-[1.02]',
+                color,
+            )}
+        >
+            <div className="text-[10px] font-semibold whitespace-nowrap opacity-90">
+                {formatTime(post.scheduled_at)}
+            </div>
+            <div className="line-clamp-2 text-[11px] leading-tight font-medium">
+                {post.content}
+            </div>
+        </button>
+    );
+}
+
+export default function Schedule({
+    weekStart,
+    posts,
+    categories,
+}: {
+    weekStart: string;
+    posts: ScheduledPost[];
+    categories: Category[];
+}) {
+    const form = useForm({
+        week_start: weekStart,
+        range_start: '10:00',
+        range_end: '22:00',
+        per_day: 3,
+        categories: categories.map((c) => c.slug),
+    });
+
+    const [editingPost, setEditingPost] = useState<ScheduledPost | null>(
+        null,
+    );
+    const [draftContent, setDraftContent] = useState('');
+    const [draftCategory, setDraftCategory] = useState('');
+    const [draftTime, setDraftTime] = useState('');
+    const [saving, setSaving] = useState(false);
+    const [saveError, setSaveError] = useState<string | null>(null);
+    const [regenerating, setRegenerating] = useState(false);
+    const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
+
+    // "Today" and the live now-line are computed client-side only — the
+    // server and browser clocks/timezones can disagree, and computing this
+    // during SSR would cause a hydration mismatch (see formatWeekRange's
+    // sibling bug history). Null until mounted means no highlight on first
+    // paint, matching the server-rendered markup exactly.
+    const [todayKey, setTodayKey] = useState<string | null>(null);
+    const [nowOffset, setNowOffset] = useState<number | null>(null);
+
+    useEffect(() => {
+        const update = () => {
+            const now = new Date();
+            setTodayKey(toDateKey(now));
+            setNowOffset(
+                (now.getHours() + now.getMinutes() / 60) * ROW_HEIGHT,
+            );
+        };
+
+        update();
+        const interval = setInterval(update, 60_000);
+
+        return () => clearInterval(interval);
+    }, []);
+
+    const weekHasPosts = posts.length > 0;
+
+    const scrollRef = useRef<HTMLDivElement>(null);
+
+    // Scroll the earliest post of the week to the top of the grid — on week
+    // navigation, and the moment a week goes from empty to freshly
+    // generated. Not on every in-place edit/regenerate, which would jerk the
+    // view around while someone is working on a post.
+    useLayoutEffect(() => {
+        if (!scrollRef.current) {
+            return;
+        }
+
+        const hours = posts.map((post) => Number(post.scheduled_at.slice(11, 13)));
+        const earliestHour = hours.length > 0 ? Math.min(...hours) : 8;
+        scrollRef.current.scrollTop = earliestHour * ROW_HEIGHT;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [weekStart, weekHasPosts]);
+
+    const toggleCategory = (slug: string) => {
+        const current = form.data.categories;
+        const isEnabled = current.includes(slug);
+
+        // Always keep at least one category enabled.
+        if (isEnabled && current.length === 1) {
+            return;
+        }
+
+        form.setData(
+            'categories',
+            isEnabled
+                ? current.filter((c) => c !== slug)
+                : [...current, slug],
+        );
+    };
+
+    const goToWeek = (offsetDays: number) => {
+        const target = toLocalDate(weekStart, offsetDays);
+        router.get(
+            '/schedule',
+            { week: toDateKey(target) },
+            { preserveScroll: true },
+        );
+    };
+
+    const goToThisWeek = () => {
+        router.get(
+            '/schedule',
+            { week: toDateKey(mondayOf(new Date())) },
+            { preserveScroll: true },
+        );
+    };
+
+    const generate = (e: React.FormEvent) => {
+        e.preventDefault();
+
+        if (weekHasPosts) {
+            return;
+        }
+
+        form.transform((data) => ({ ...data, week_start: weekStart }));
+        form.post('/schedule/generate', { preserveScroll: true });
+    };
+
+    const openPost = (post: ScheduledPost) => {
+        setEditingPost(post);
+        setDraftContent(post.content);
+        setDraftCategory(post.category ?? categories[0]?.slug ?? '');
+        setDraftTime(post.scheduled_at.slice(11, 16));
+        setSaveError(null);
+    };
+
+    const closeModal = () => setEditingPost(null);
+
+    const saveChanges = () => {
+        if (!editingPost) {
+            return;
+        }
+
+        setSaving(true);
+        setSaveError(null);
+        router.put(
+            `/schedule/posts/${editingPost.id}`,
+            {
+                content: draftContent,
+                category: draftCategory,
+                time: draftTime,
+            },
+            {
+                preserveScroll: true,
+                onSuccess: () => closeModal(),
+                onError: (errors) =>
+                    setSaveError(errors.time ?? 'Could not save changes.'),
+                onFinish: () => setSaving(false),
+            },
+        );
+    };
+
+    const regenerate = () => {
+        if (!editingPost) {
+            return;
+        }
+
+        setRegenerating(true);
+        router.post(
+            `/schedule/posts/${editingPost.id}/regenerate`,
+            { category: draftCategory },
+            {
+                preserveScroll: true,
+                onSuccess: (page) => {
+                    const updated = (
+                        page.props.posts as ScheduledPost[]
+                    ).find((p) => p.id === editingPost.id);
+
+                    if (updated) {
+                        setDraftContent(updated.content);
+                        setDraftCategory(updated.category ?? draftCategory);
+                    }
+                },
+                onFinish: () => setRegenerating(false),
+            },
+        );
+    };
+
+    const confirmDelete = () => {
+        if (deleteTarget === null) {
+            return;
+        }
+
+        router.delete(`/schedule/posts/${deleteTarget}`, {
+            preserveScroll: true,
+            onSuccess: () => {
+                if (editingPost?.id === deleteTarget) {
+                    closeModal();
+                }
+            },
+        });
+        setDeleteTarget(null);
+    };
+
+    const postsByDay = DAY_LABELS.map((_, i) => {
+        const key = toDateKey(toLocalDate(weekStart, i));
+
+        return posts.filter(
+            (post) => post.scheduled_at.slice(0, 10) === key,
+        );
+    });
+
+    return (
+        <>
+            <Head title="Weekly Schedule" />
+
+            <div className="flex h-full flex-1 flex-col gap-6 p-4">
+                <Heading
+                    title="Weekly Schedule"
+                    description="Generate a week's worth of AI-written draft posts, spaced out across the days."
+                />
+
+                <Card className="w-full">
+                    <CardContent className="flex flex-col gap-4">
+                        <div className="flex flex-wrap items-end gap-4">
+                            <div className="flex items-center gap-2">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="icon"
+                                    onClick={() => goToWeek(-7)}
+                                >
+                                    <ChevronLeft className="size-4" />
+                                </Button>
+                                <div className="text-sm font-medium whitespace-nowrap">
+                                    Week of {formatWeekRange(weekStart)}
+                                </div>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="icon"
+                                    onClick={() => goToWeek(7)}
+                                >
+                                    <ChevronRight className="size-4" />
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={goToThisWeek}
+                                >
+                                    Current week
+                                </Button>
+                            </div>
+
+                            <form
+                                onSubmit={generate}
+                                className="flex flex-wrap items-end gap-4"
+                            >
+                                <div className="grid gap-1.5">
+                                    <Label htmlFor="range_start">
+                                        From
+                                    </Label>
+                                    <Select
+                                        value={form.data.range_start}
+                                        onValueChange={(value) =>
+                                            form.setData('range_start', value)
+                                        }
+                                    >
+                                        <SelectTrigger
+                                            id="range_start"
+                                            className="w-28"
+                                        >
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent className="max-h-72">
+                                            {START_TIME_OPTIONS.map(
+                                                (option) => (
+                                                    <SelectItem
+                                                        key={option.value}
+                                                        value={option.value}
+                                                    >
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ),
+                                            )}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                <div className="grid gap-1.5">
+                                    <Label htmlFor="range_end">To</Label>
+                                    <Select
+                                        value={form.data.range_end}
+                                        onValueChange={(value) =>
+                                            form.setData('range_end', value)
+                                        }
+                                    >
+                                        <SelectTrigger
+                                            id="range_end"
+                                            className="w-28"
+                                        >
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent className="max-h-72">
+                                            {START_TIME_OPTIONS.map(
+                                                (option) => (
+                                                    <SelectItem
+                                                        key={option.value}
+                                                        value={option.value}
+                                                    >
+                                                        {option.label}
+                                                    </SelectItem>
+                                                ),
+                                            )}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
+                                <div className="grid w-36 gap-1.5">
+                                    <Label>
+                                        Per day · {form.data.per_day}
+                                    </Label>
+                                    <Slider
+                                        min={1}
+                                        max={6}
+                                        step={1}
+                                        value={[form.data.per_day]}
+                                        onValueChange={([value]) =>
+                                            form.setData('per_day', value)
+                                        }
+                                        className="py-1.5"
+                                    />
+                                </div>
+
+                                <Button
+                                    type="submit"
+                                    disabled={
+                                        form.processing || weekHasPosts
+                                    }
+                                    title={
+                                        weekHasPosts
+                                            ? 'This week already has posts — edit or delete them below, or switch weeks.'
+                                            : undefined
+                                    }
+                                >
+                                    {form.processing ? (
+                                        <Spinner className="size-4" />
+                                    ) : (
+                                        <Sparkles className="size-4" />
+                                    )}
+                                    Generate week
+                                </Button>
+                            </form>
+                        </div>
+
+                        {weekHasPosts && (
+                            <p className="text-xs text-muted-foreground">
+                                This week already has posts — click a post
+                                below to edit or regenerate it, or delete it
+                                first to generate a fresh batch.
+                            </p>
+                        )}
+
+                        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
+                            <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                                Legend
+                            </span>
+                            {categories.map((category) => (
+                                <LegendToggle
+                                    key={category.slug}
+                                    category={category}
+                                    active={form.data.categories.includes(
+                                        category.slug,
+                                    )}
+                                    onToggle={() =>
+                                        toggleCategory(category.slug)
+                                    }
+                                />
+                            ))}
+                        </div>
+                    </CardContent>
+                </Card>
+
+                <Card className="relative flex w-full flex-col gap-0 overflow-hidden py-0">
+                    {!weekHasPosts && (
+                        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+                            <p className="rounded-md bg-card/90 px-4 py-2 text-sm text-muted-foreground shadow-sm">
+                                No posts yet — generate this week to fill the
+                                calendar.
+                            </p>
+                        </div>
+                    )}
+
+                    {/* Day header row, aligned to the hour rail + 7 day columns below. */}
+                    <div className="flex border-b border-border">
+                        <div className="w-14 shrink-0" />
+                        <div className="grid flex-1 grid-cols-7">
+                            {DAY_LABELS.map((label, i) => {
+                                const date = toLocalDate(weekStart, i);
+                                const isToday =
+                                    todayKey === toDateKey(date);
+
+                                return (
+                                    <div
+                                        key={label}
+                                        className="flex flex-col items-center gap-1 border-l border-border py-2 first:border-l-0"
+                                    >
+                                        <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                                            {label}
+                                        </span>
+                                        <span
+                                            className={cn(
+                                                'flex size-7 items-center justify-center rounded-full text-sm font-semibold',
+                                                isToday &&
+                                                    'bg-primary text-primary-foreground',
+                                            )}
+                                        >
+                                            {date.getDate()}
+                                        </span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* Scrollable 24-hour grid. */}
+                    <div ref={scrollRef} className="flex max-h-[65vh] overflow-y-auto">
+                        <div className="w-14 shrink-0">
+                            {HOURS.map((hour) => (
+                                <div
+                                    key={hour}
+                                    style={{ height: ROW_HEIGHT }}
+                                    className="-translate-y-1/2 pr-2 text-right text-[11px] text-muted-foreground"
+                                >
+                                    {hour === 0 ? '' : hourLabel(hour)}
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="grid flex-1 grid-cols-7">
+                            {DAY_LABELS.map((label, i) => {
+                                const date = toLocalDate(weekStart, i);
+                                const dayKey = toDateKey(date);
+                                const isToday = todayKey === dayKey;
+
+                                return (
+                                    <div
+                                        key={label}
+                                        className="relative border-l border-border first:border-l-0"
+                                        style={{
+                                            height: HOURS.length * ROW_HEIGHT,
+                                        }}
+                                    >
+                                        {HOURS.map((hour) => (
+                                            <div
+                                                key={hour}
+                                                style={{ height: ROW_HEIGHT }}
+                                                className="border-t border-border/50"
+                                            />
+                                        ))}
+
+                                        {postsByDay[i].map((post) => (
+                                            <CalendarChip
+                                                key={post.id}
+                                                post={post}
+                                                categories={categories}
+                                                onOpen={() => openPost(post)}
+                                            />
+                                        ))}
+
+                                        {isToday && nowOffset !== null && (
+                                            <div
+                                                style={{ top: nowOffset }}
+                                                className="pointer-events-none absolute inset-x-0 z-10 flex items-center"
+                                            >
+                                                <span className="-ml-1 size-2 rounded-full bg-red-500" />
+                                                <span className="h-px flex-1 bg-red-500" />
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </Card>
+            </div>
+
+            <Dialog
+                open={editingPost !== null}
+                onOpenChange={(open) => !open && closeModal()}
+            >
+                <DialogContent className="sm:max-w-md">
+                    {editingPost && (
+                        <div className="flex flex-col gap-5">
+                            <div className="flex items-center justify-between">
+                                <span className="rounded-full bg-primary px-4 py-1.5 text-xs font-bold whitespace-nowrap text-primary-foreground">
+                                    {formatDayBadge(
+                                        editingPost.scheduled_at,
+                                    )}
+                                </span>
+                            </div>
+
+                            <h2 className="text-xl font-bold">Edit tweet</h2>
+
+                            <div className="grid gap-1.5">
+                                <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                    Time
+                                </Label>
+                                <Select
+                                    value={draftTime}
+                                    onValueChange={(value) => {
+                                        setDraftTime(value);
+                                        setSaveError(null);
+                                    }}
+                                >
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent className="max-h-72">
+                                        {START_TIME_OPTIONS.map((option) => (
+                                            <SelectItem
+                                                key={option.value}
+                                                value={option.value}
+                                            >
+                                                {option.label}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                {saveError && (
+                                    <p className="text-xs text-destructive">
+                                        {saveError}
+                                    </p>
+                                )}
+                            </div>
+
+                            <div className="grid gap-1.5">
+                                <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                    Pattern
+                                </Label>
+                                <div className="flex flex-wrap gap-2">
+                                    {categories.map((category) => (
+                                        <PatternOption
+                                            key={category.slug}
+                                            category={category}
+                                            selected={
+                                                draftCategory ===
+                                                category.slug
+                                            }
+                                            onSelect={() =>
+                                                setDraftCategory(
+                                                    category.slug,
+                                                )
+                                            }
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="grid gap-1.5">
+                                <div className="flex items-center justify-between">
+                                    <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                        Content
+                                    </Label>
+                                    <span className="text-xs text-muted-foreground">
+                                        {draftContent.length}/280
+                                    </span>
+                                </div>
+                                <Textarea
+                                    value={draftContent}
+                                    onChange={(e) =>
+                                        setDraftContent(e.target.value)
+                                    }
+                                    className="min-h-32"
+                                />
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="icon"
+                                    onClick={() =>
+                                        setDeleteTarget(editingPost.id)
+                                    }
+                                >
+                                    <Trash2 className="size-4" />
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    className="flex-1"
+                                    disabled={regenerating}
+                                    onClick={regenerate}
+                                >
+                                    {regenerating ? (
+                                        <Spinner className="size-4" />
+                                    ) : (
+                                        <RefreshCw className="size-4" />
+                                    )}
+                                    Re-generate
+                                </Button>
+                                <Button
+                                    type="button"
+                                    className="flex-1"
+                                    disabled={
+                                        saving || draftContent.trim() === ''
+                                    }
+                                    onClick={saveChanges}
+                                >
+                                    {saving && (
+                                        <Spinner className="size-4" />
+                                    )}
+                                    Save changes
+                                </Button>
+                            </div>
+                        </div>
+                    )}
+                </DialogContent>
+            </Dialog>
+
+            <AlertDialog
+                open={deleteTarget !== null}
+                onOpenChange={(open) => !open && setDeleteTarget(null)}
+            >
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Delete this post?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            This draft will be permanently removed from the
+                            schedule. This can't be undone.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={confirmDelete}>
+                            Delete
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+        </>
+    );
+}
+
+Schedule.layout = {
+    breadcrumbs: [{ title: 'Weekly Schedule', href: '/schedule' }],
+};

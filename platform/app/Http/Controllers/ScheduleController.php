@@ -1,0 +1,266 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Generation;
+use App\Models\ScheduledPost;
+use App\Services\ClaudeService;
+use App\Services\PromptBuilder;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Inertia\Inertia;
+use Inertia\Response;
+use RuntimeException;
+
+class ScheduleController extends Controller
+{
+    public function __construct(
+        private readonly ClaudeService $claude,
+        private readonly PromptBuilder $prompts,
+    ) {}
+
+    /**
+     * Show the weekly schedule for the week containing ?week= (default: this week).
+     */
+    public function index(Request $request): Response
+    {
+        $weekStart = $this->resolveWeekStart($request->query('week'));
+        $weekEnd = $weekStart->copy()->endOfWeek(Carbon::SUNDAY);
+
+        $posts = $request->user()->scheduledPosts()
+            ->whereBetween('scheduled_at', [$weekStart, $weekEnd])
+            ->orderBy('scheduled_at')
+            ->get()
+            ->map(fn (ScheduledPost $post) => [
+                'id' => $post->id,
+                'content' => $post->content,
+                'category' => $post->category,
+                'scheduled_at' => $post->scheduled_at->toIso8601String(),
+            ]);
+
+        return Inertia::render('schedule', [
+            'weekStart' => $weekStart->toDateString(),
+            'posts' => $posts,
+            'categories' => collect(PromptBuilder::POST_CATEGORIES)
+                ->map(fn (string $label, string $slug) => ['slug' => $slug, 'label' => $label])
+                ->values(),
+        ]);
+    }
+
+    /**
+     * Generate a full week of draft posts and replace any existing drafts
+     * for that week.
+     */
+    public function generate(Request $request): RedirectResponse
+    {
+        $data = $request->validate([
+            'week_start' => ['required', 'date'],
+            'range_start' => ['required', 'date_format:H:i'],
+            'range_end' => ['required', 'date_format:H:i', 'after:range_start'],
+            'per_day' => ['required', 'integer', 'min:1', 'max:6'],
+            'categories' => ['sometimes', 'array', 'min:1'],
+            'categories.*' => ['string', 'in:'.implode(',', array_keys(PromptBuilder::POST_CATEGORIES))],
+        ]);
+
+        $user = $request->user();
+        $weekStart = $this->resolveWeekStart($data['week_start']);
+        $weekEnd = $weekStart->copy()->endOfWeek(Carbon::SUNDAY);
+        $perDay = (int) $data['per_day'];
+        $total = $perDay * 7;
+
+        $rangeStartMinutes = $this->toMinutes($data['range_start']);
+        $rangeEndMinutes = $this->toMinutes($data['range_end']);
+
+        if (intdiv($rangeEndMinutes - $rangeStartMinutes, 15) + 1 < $perDay) {
+            return back()->withErrors([
+                'per_day' => 'The time range is too narrow to fit that many posts per day without overlapping.',
+            ]);
+        }
+
+        $categoryKeys = $data['categories'] ?? array_keys(PromptBuilder::POST_CATEGORIES);
+        $categories = array_map(
+            fn (int $i) => $categoryKeys[$i % count($categoryKeys)],
+            range(0, $total - 1),
+        );
+
+        $system = $this->prompts->systemPrompt($user->voiceProfile);
+        $prompt = $this->prompts->weeklyBatchPrompt($categories);
+
+        try {
+            $result = $this->claude->generateOptions($system, $prompt, $total, min(4096, 200 * $total));
+        } catch (RuntimeException $e) {
+            return back()->withErrors(['generate' => $e->getMessage()]);
+        }
+
+        DB::transaction(function () use (
+            $user, $weekStart, $weekEnd, $perDay, $rangeStartMinutes, $rangeEndMinutes, $data, $result, $categories
+        ) {
+            $user->scheduledPosts()
+                ->whereBetween('scheduled_at', [$weekStart, $weekEnd])
+                ->delete();
+
+            $generation = $user->generations()->create([
+                'type' => Generation::TYPE_POST,
+                'input_context' => null,
+                'meta' => [
+                    'weekly_schedule' => true,
+                    'week_start' => $weekStart->toDateString(),
+                    'per_day' => $perDay,
+                    'range_start' => $data['range_start'],
+                    'range_end' => $data['range_end'],
+                ],
+                'output' => $result['options'],
+                'model' => $result['model'],
+                'tokens_in' => $result['input_tokens'],
+                'tokens_out' => $result['output_tokens'],
+            ]);
+
+            $options = $result['options'];
+
+            foreach (range(0, 6) as $day) {
+                $times = $this->randomTimesInRange($rangeStartMinutes, $rangeEndMinutes, $perDay);
+
+                foreach ($times as $slot => $minutes) {
+                    $index = $day * $perDay + $slot;
+
+                    if (! isset($options[$index])) {
+                        continue;
+                    }
+
+                    $scheduledAt = $weekStart->copy()
+                        ->addDays($day)
+                        ->startOfDay()
+                        ->addMinutes($minutes);
+
+                    ScheduledPost::create([
+                        'user_id' => $user->id,
+                        'generation_id' => $generation->id,
+                        'content' => $options[$index],
+                        'category' => $categories[$index] ?? null,
+                        'scheduled_at' => $scheduledAt,
+                    ]);
+                }
+            }
+        });
+
+        return back()->with('toast', 'Weekly schedule generated.');
+    }
+
+    private function toMinutes(string $time): int
+    {
+        [$hours, $minutes] = explode(':', $time);
+
+        return ((int) $hours * 60) + (int) $minutes;
+    }
+
+    /**
+     * Pick $count distinct 15-minute slots between $startMinutes and
+     * $endMinutes (inclusive), in chronological order.
+     *
+     * @return array<int, int>
+     */
+    private function randomTimesInRange(int $startMinutes, int $endMinutes, int $count): array
+    {
+        $slots = range($startMinutes, $endMinutes, 15);
+        shuffle($slots);
+        $chosen = array_slice($slots, 0, min($count, count($slots)));
+        sort($chosen);
+
+        return $chosen;
+    }
+
+    /**
+     * Update a single scheduled post's content, category, and/or time.
+     */
+    public function update(Request $request, ScheduledPost $post): RedirectResponse
+    {
+        abort_unless($post->user_id === $request->user()->id, 403);
+
+        $data = $request->validate([
+            'content' => ['required', 'string'],
+            'category' => ['required', 'string', 'in:'.implode(',', array_keys(PromptBuilder::POST_CATEGORIES))],
+            'time' => ['required', 'date_format:H:i'],
+        ]);
+
+        $scheduledAt = $post->scheduled_at->copy()->setTimeFromTimeString($data['time']);
+
+        $conflict = $request->user()->scheduledPosts()
+            ->where('id', '!=', $post->id)
+            ->where('scheduled_at', $scheduledAt)
+            ->exists();
+
+        if ($conflict) {
+            return back()->withErrors([
+                'time' => 'Another post is already scheduled at that time on this day. Pick a different time.',
+            ]);
+        }
+
+        $post->update([
+            'content' => $data['content'],
+            'category' => $data['category'],
+            'scheduled_at' => $scheduledAt,
+        ]);
+
+        return back();
+    }
+
+    /**
+     * Regenerate a single post's content in its assigned (or newly chosen)
+     * category, keeping its scheduled time.
+     */
+    public function regenerate(Request $request, ScheduledPost $post): RedirectResponse
+    {
+        abort_unless($post->user_id === $request->user()->id, 403);
+
+        $data = $request->validate([
+            'category' => ['required', 'string', 'in:'.implode(',', array_keys(PromptBuilder::POST_CATEGORIES))],
+        ]);
+
+        $user = $request->user();
+        $system = $this->prompts->systemPrompt($user->voiceProfile);
+        $prompt = $this->prompts->weeklyBatchPrompt([$data['category']]);
+
+        try {
+            $result = $this->claude->generateOptions($system, $prompt, 1, 512);
+        } catch (RuntimeException $e) {
+            return back()->withErrors(['regenerate' => $e->getMessage()]);
+        }
+
+        $generation = $user->generations()->create([
+            'type' => Generation::TYPE_POST,
+            'input_context' => null,
+            'meta' => ['weekly_schedule' => true, 'regenerate' => true, 'category' => $data['category']],
+            'output' => $result['options'],
+            'model' => $result['model'],
+            'tokens_in' => $result['input_tokens'],
+            'tokens_out' => $result['output_tokens'],
+        ]);
+
+        $post->update([
+            'content' => $result['options'][0] ?? $post->content,
+            'category' => $data['category'],
+            'generation_id' => $generation->id,
+        ]);
+
+        return back();
+    }
+
+    /**
+     * Delete a single scheduled post.
+     */
+    public function destroy(Request $request, ScheduledPost $post): RedirectResponse
+    {
+        abort_unless($post->user_id === $request->user()->id, 403);
+
+        $post->delete();
+
+        return back();
+    }
+
+    private function resolveWeekStart(?string $date): Carbon
+    {
+        return Carbon::parse($date ?? 'today')->startOfWeek(Carbon::MONDAY);
+    }
+}
