@@ -55,23 +55,14 @@ type Category = {
     label: string;
 };
 
-// Colors for the status pill (used in the edit modal, which has plenty of
-// room) — mirrors CATEGORY_COLORS below, kept in sync by hand with backend
-// ScheduledPost::STATUSES slugs.
+// Colors for the status pill — used both on the compact calendar chip and
+// the edit modal — mirrors CATEGORY_COLORS below, kept in sync by hand with
+// backend ScheduledPost::STATUSES slugs.
 const STATUS_COLORS: Record<string, string> = {
     draft: 'bg-muted text-muted-foreground',
     scheduled: 'bg-emerald-600 text-white',
     posted: 'bg-blue-600 text-white',
     failed: 'bg-red-600 text-white',
-};
-
-// Same statuses, as a small dot for the compact calendar chip (see
-// CalendarChip) where a narrow day column can't always fit a text pill.
-const STATUS_DOT_COLORS: Record<string, string> = {
-    draft: 'bg-muted-foreground/60',
-    scheduled: 'bg-emerald-400',
-    posted: 'bg-blue-400',
-    failed: 'bg-red-400',
 };
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -279,21 +270,23 @@ function CalendarChip({
                     )}
                 >
                     <div className="flex min-w-0 items-center gap-1">
-                        <span className="truncate text-[10px] font-semibold opacity-90">
+                        {/* min-w-0 + truncate lets the time give up space
+                            first — the status label is shrink-0 so it
+                            always renders in full instead of getting
+                            clipped by this chip's overflow-hidden on
+                            narrow columns. */}
+                        <span className="min-w-0 flex-1 truncate text-[10px] font-semibold opacity-90">
                             {formatTime(post.scheduled_at)}
                         </span>
-                        {/* A fixed-size dot rather than a text pill — a
-                            "DRAFT"/"SCHEDULED" label would get clipped by
-                            this chip's overflow-hidden on narrow columns.
-                            Full status text is still in the tooltip below. */}
                         <span
                             className={cn(
-                                'size-1.5 shrink-0 rounded-full',
-                                STATUS_DOT_COLORS[post.status] ??
-                                    'bg-muted-foreground',
+                                'shrink-0 rounded-full px-1.5 py-px text-[9px] font-bold tracking-wide whitespace-nowrap uppercase',
+                                STATUS_COLORS[post.status] ??
+                                    FALLBACK_CATEGORY_COLOR,
                             )}
-                            aria-hidden
-                        />
+                        >
+                            {statusLabel}
+                        </span>
                     </div>
                     <div className="line-clamp-2 text-[11px] leading-tight font-medium">
                         {post.content}
