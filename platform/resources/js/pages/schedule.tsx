@@ -324,6 +324,11 @@ export default function Schedule({
         categories: categories.map((c) => c.slug),
     });
 
+    // scheduled_at is stored as a naive wall-clock value — the browser's own
+    // IANA timezone is sent alongside it so the backend can later compute
+    // the real due instant for auto-posting (see ScheduledPost::realScheduledAt).
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
     const [editingPost, setEditingPost] = useState<ScheduledPost | null>(null);
     const [draftContent, setDraftContent] = useState('');
     const [draftCategory, setDraftCategory] = useState('');
@@ -417,7 +422,11 @@ export default function Schedule({
             return;
         }
 
-        form.transform((data) => ({ ...data, week_start: weekStart }));
+        form.transform((data) => ({
+            ...data,
+            week_start: weekStart,
+            timezone,
+        }));
         form.post('/schedule/generate', { preserveScroll: true });
     };
 
@@ -445,6 +454,7 @@ export default function Schedule({
                 content: draftContent,
                 category: draftCategory,
                 time: draftTime,
+                timezone,
             },
             {
                 preserveScroll: true,

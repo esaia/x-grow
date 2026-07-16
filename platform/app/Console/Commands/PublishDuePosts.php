@@ -26,12 +26,19 @@ class PublishDuePosts extends Command
 
     public function handle(): int
     {
+        // scheduled_at is a naive wall-clock value (see CLAUDE.md /
+        // ScheduledPost::realScheduledAt) — the server's own timezone can
+        // differ from the timezone the post was scheduled in, so "due" is
+        // computed per-row in PHP rather than in the query itself.
         ScheduledPost::query()
             ->where('status', ScheduledPost::STATUS_SCHEDULED)
-            ->where('scheduled_at', '<=', now())
             ->orderBy('scheduled_at')
             ->chunkById(20, function ($posts) {
                 foreach ($posts as $post) {
+                    if ($post->realScheduledAt()->isFuture()) {
+                        continue;
+                    }
+
                     try {
                         $this->x->publish($post);
                     } catch (Throwable $e) {

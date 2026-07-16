@@ -68,7 +68,13 @@ class ScheduleController extends Controller
             'per_day' => ['required', 'integer', 'min:1', 'max:6'],
             'categories' => ['sometimes', 'array', 'min:1'],
             'categories.*' => ['string', 'in:'.implode(',', array_keys(PromptBuilder::POST_CATEGORIES))],
+            // The browser's IANA timezone (e.g. "Asia/Dubai") — scheduled_at
+            // is stored as a naive wall-clock value, so this is required to
+            // later compute the real due instant for auto-posting.
+            'timezone' => ['nullable', 'string', 'timezone'],
         ]);
+
+        $timezone = $data['timezone'] ?? config('app.timezone');
 
         $user = $request->user();
         $weekStart = $this->resolveWeekStart($data['week_start']);
@@ -105,7 +111,7 @@ class ScheduleController extends Controller
         }
 
         DB::transaction(function () use (
-            $user, $weekStart, $weekEnd, $perDay, $rangeStartMinutes, $rangeEndMinutes, $data, $result, $categories
+            $user, $weekStart, $weekEnd, $perDay, $rangeStartMinutes, $rangeEndMinutes, $data, $result, $categories, $timezone
         ) {
             $user->scheduledPosts()
                 ->whereBetween('scheduled_at', [$weekStart, $weekEnd])
@@ -151,6 +157,7 @@ class ScheduleController extends Controller
                         'category' => $categories[$index] ?? null,
                         'status' => ScheduledPost::STATUS_DRAFT,
                         'scheduled_at' => $scheduledAt,
+                        'timezone' => $timezone,
                     ]);
                 }
             }
@@ -213,6 +220,7 @@ class ScheduleController extends Controller
             'content' => ['required', 'string'],
             'category' => ['required', 'string', 'in:'.implode(',', array_keys(PromptBuilder::POST_CATEGORIES))],
             'time' => ['required', 'date_format:H:i'],
+            'timezone' => ['nullable', 'string', 'timezone'],
         ]);
 
         $scheduledAt = $post->scheduled_at->copy()->setTimeFromTimeString($data['time']);
@@ -238,6 +246,7 @@ class ScheduleController extends Controller
             'content' => $data['content'],
             'category' => $data['category'],
             'scheduled_at' => $scheduledAt,
+            'timezone' => $data['timezone'] ?? $post->timezone,
             'status' => $revertedToDraft ? ScheduledPost::STATUS_DRAFT : $post->status,
         ]);
 
@@ -311,7 +320,7 @@ class ScheduleController extends Controller
     {
         abort_unless($post->user_id === $request->user()->id, 403);
 
-        if ($post->scheduled_at->isPast()) {
+        if ($post->realScheduledAt()->isPast()) {
             return back()->withErrors([
                 'schedule' => 'This slot is already in the past — edit the time before scheduling.',
             ]);
@@ -344,11 +353,17 @@ class ScheduleController extends Controller
         $weekStart = $this->resolveWeekStart($data['week_start']);
         $weekEnd = $weekStart->copy()->endOfWeek(Carbon::SUNDAY);
 
-        $request->user()->scheduledPosts()
+        // "Still in the future" has to account for each post's own timezone
+        // (see ScheduledPost::realScheduledAt) rather than comparing the
+        // naive wall-clock scheduled_at against the server's now() directly.
+        $ids = $request->user()->scheduledPosts()
             ->whereBetween('scheduled_at', [$weekStart, $weekEnd])
             ->where('status', ScheduledPost::STATUS_DRAFT)
-            ->where('scheduled_at', '>', now())
-            ->update(['status' => ScheduledPost::STATUS_SCHEDULED, 'error' => null]);
+            ->get()
+            ->filter(fn (ScheduledPost $post) => $post->realScheduledAt()->isFuture())
+            ->pluck('id');
+
+        ScheduledPost::whereIn('id', $ids)->update(['status' => ScheduledPost::STATUS_SCHEDULED, 'error' => null]);
 
         return back()->with('toast', 'All draft posts this week are now scheduled.');
     }
