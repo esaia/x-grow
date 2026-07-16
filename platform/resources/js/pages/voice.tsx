@@ -50,6 +50,7 @@ type VoiceProfile = {
     tone: string;
     sample_posts: string | null;
     bio_context: string | null;
+    facts: string | null;
     links: string | null;
     projects: string | null;
     topics: string | null;
@@ -76,6 +77,7 @@ export default function Voice({
     const form = useForm({
         tone: profile.tone ?? 'balanced',
         bio_context: profile.bio_context ?? '',
+        facts: profile.facts ?? '',
         sample_posts: profile.sample_posts ?? '',
         links: profile.links ?? '',
         projects: profile.projects ?? '',
@@ -230,6 +232,33 @@ export default function Voice({
                                 placeholder="Indie hacker building AI tools. I post about shipping fast, design, and the reality of running a solo SaaS."
                             />
                             <InputError message={form.errors.bio_context} />
+                        </CardContent>
+                    </Card>
+
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Facts (only true things)</CardTitle>
+                            <CardDescription>
+                                Real, specific facts the AI is allowed to
+                                state — dates, timelines, metrics, stack. This
+                                stops it from guessing numbers like "6 months"
+                                out of thin air. If it's not listed here, the
+                                AI should write around it instead of inventing
+                                it.
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent className="grid grid-cols-1 gap-2">
+                            <Textarea
+                                id="facts"
+                                value={form.data.facts}
+                                onChange={(e) =>
+                                    form.setData('facts', e.target.value)
+                                }
+                                placeholder={
+                                    'Product: X-Grow, an AI copilot for growing on X.\nStarted building: March 2026.\nStack: Laravel, React, MySQL, Claude API.\nReal metrics: 40 beta users, no revenue yet.'
+                                }
+                            />
+                            <InputError message={form.errors.facts} />
                         </CardContent>
                     </Card>
 

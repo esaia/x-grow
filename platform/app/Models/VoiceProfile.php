@@ -14,6 +14,7 @@ class VoiceProfile extends Model
         'dos',
         'donts',
         'bio_context',
+        'facts',
         'links',
         'projects',
         'topics',

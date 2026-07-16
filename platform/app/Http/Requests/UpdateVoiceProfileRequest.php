@@ -24,6 +24,7 @@ class UpdateVoiceProfileRequest extends FormRequest
             'dos' => ['nullable', 'string', 'max:5000'],
             'donts' => ['nullable', 'string', 'max:5000'],
             'bio_context' => ['nullable', 'string', 'max:5000'],
+            'facts' => ['nullable', 'string', 'max:5000'],
             'links' => ['nullable', 'string', 'max:2000'],
             'projects' => ['nullable', 'string', 'max:5000'],
             'topics' => ['nullable', 'string', 'max:2000'],

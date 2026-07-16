@@ -91,6 +91,10 @@ class ScheduleController extends Controller
         $system = $this->prompts->systemPrompt($user->voiceProfile);
         $prompt = $this->prompts->weeklyBatchPrompt($categories);
 
+        // A full week's batch (up to 42 posts) can take longer than PHP's
+        // default 30s execution limit to generate in one Claude call.
+        set_time_limit(180);
+
         try {
             $result = $this->claude->generateOptions($system, $prompt, $total, min(4096, 200 * $total));
         } catch (RuntimeException $e) {

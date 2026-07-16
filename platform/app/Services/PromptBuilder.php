@@ -38,8 +38,19 @@ class PromptBuilder
             '- A single post or reply must be under 280 characters unless the user explicitly asks for a thread.',
             '- Match the voice, vocabulary, capitalization, and punctuation of the sample posts below when they are provided.',
             '- Do not use hashtags or emojis unless they clearly appear in the sample posts.',
-            '- No corporate buzzwords, no "As an AI", no disclaimers, no em-dashes unless the samples use them.',
+            '- No corporate buzzwords, no "As an AI", no disclaimers.',
             '- Prefer concrete, specific, opinionated writing over generic platitudes.',
+            '- Never invent specific numbers, durations, dates, revenue, user counts, or timelines. Only state '
+                .'facts that appear in the "Facts about the account owner" section below. If you don\'t have a '
+                .'specific fact to reach for, write around it in general terms instead of guessing.',
+            '',
+            'Write like a human, not like AI:',
+            '- No em-dashes or en-dashes (— –). Use commas, periods, or split into two sentences.',
+            '- No "it\'s not just X, it\'s Y" constructions.',
+            '- Avoid stock AI phrasing: "here\'s the thing", "let\'s dive in", "unpack", "leverage", '
+                .'"game-changer", "seamless", "elevate", "in today\'s world", "at the end of the day".',
+            '- Don\'t end every post with a rhetorical question — vary how posts close.',
+            '- Vary sentence length. Short fragments are fine. Lowercase is fine if the samples use it.',
         ];
 
         $tone = $profile?->tone ?: 'balanced';
@@ -50,6 +61,12 @@ class PromptBuilder
             if (filled($profile->bio_context)) {
                 $lines[] = '';
                 $lines[] = "About the account owner (use for relevance):\n".trim($profile->bio_context);
+            }
+
+            if (filled($profile->facts)) {
+                $lines[] = '';
+                $lines[] = 'Facts about the account owner (use ONLY these when stating anything specific — '
+                    ."never invent a fact not listed here):\n".trim($profile->facts);
             }
 
             if (filled($profile->topics)) {
@@ -151,7 +168,8 @@ class PromptBuilder
                 .'then 3-6 follow-up tweets that each deliver one clear idea. Separate the tweets within a thread '
                 .'with a blank line. Keep every tweet under 280 characters.',
             default => 'Write standalone posts (single tweets), each under 280 characters, each able to stand on its own '
-                .'and earn likes/reposts.',
+                .'and earn likes/reposts. Where it fits the topic, reach for this high-engagement format: '
+                .$this->engagementQuestionGuidance(),
         };
 
         return implode("\n\n", $parts);
@@ -185,7 +203,7 @@ class PromptBuilder
     private function categoryGuidance(string $category): string
     {
         return match ($category) {
-            'question' => 'Ask a genuine question or run a mini poll that invites replies.',
+            'question' => $this->engagementQuestionGuidance(),
             'story' => 'Tell a short, concrete story or lesson from real experience.',
             'opinion' => 'Share a punchy, defensible hot take or contrarian opinion.',
             'tip' => 'Give one specific, actionable tip the reader can use today.',
@@ -193,6 +211,26 @@ class PromptBuilder
                 .'projects/links when relevant — confident, not salesy.',
             default => 'Write a standalone post that fits the owner\'s usual topics.',
         };
+    }
+
+    /**
+     * Guidance for the high-engagement "direct address + blunt question" format:
+     * a short address to a specific audience, a sharp question, then a
+     * dash-prefixed list of blunt, specific answer options where the last one
+     * lands as a self-aware or funny gut-punch. Mix in some as a single blunt
+     * one-liner with no list at all.
+     */
+    private function engagementQuestionGuidance(): string
+    {
+        return "Use this high-engagement format, mixing both variants across posts:\n"
+            ."(a) Address the audience directly on its own line (e.g. \"Founders,\" or the owner's own audience "
+            .'from their profile), blank line, then a sharp, specific question, blank line, then 3-5 dash-prefixed '
+            .'answer options. Each option is 1-4 words, concrete and specific to the topic (never generic filler '
+            .'like "other" or "it depends"). The last option should land as a blunt, self-aware, or funny '
+            ."admission that undercuts the polished ones before it.\n"
+            .'(b) A single blunt, specific one-line question with no list — the kind that makes someone stop '
+            .'scrolling because it calls out something they actually think but don\'t say out loud. '
+            .'No generic questions like "what do you think?" — always tied to a real, specific situation.';
     }
 
     /**

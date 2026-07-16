@@ -42,7 +42,7 @@ class ClaudeService
             'anthropic-version' => '2023-06-01',
             'content-type' => 'application/json',
         ])
-            ->timeout(60)
+            ->timeout(170)
             ->post($this->baseUrl.'/v1/messages', [
                 'model' => $this->model,
                 'max_tokens' => $maxTokens,
@@ -86,7 +86,10 @@ class ClaudeService
         $result = $this->message($system, $instruction, $maxTokens);
 
         return [
-            'options' => $this->parseOptions($result['text'], $count),
+            'options' => array_map(
+                $this->stripDashes(...),
+                $this->parseOptions($result['text'], $count)
+            ),
             'input_tokens' => $result['input_tokens'],
             'output_tokens' => $result['output_tokens'],
             'model' => $result['model'],
@@ -121,5 +124,14 @@ class ClaudeService
         // Fallback: hand back whatever text we got as a single option so the
         // user still gets something usable rather than an error.
         return $clean === '' ? [] : [$clean];
+    }
+
+    /**
+     * Belt-and-suspenders: strip em/en-dashes even if the model ignores the
+     * prompt instruction against using them.
+     */
+    private function stripDashes(string $text): string
+    {
+        return trim(preg_replace('/\s*[—–]\s*/u', ', ', $text) ?? $text);
     }
 }
