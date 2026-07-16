@@ -379,6 +379,30 @@ export default function Schedule({
 
     const scrollRef = useRef<HTMLDivElement>(null);
 
+    // The day header row lives outside the scrollable grid below it, so it
+    // never has a scrollbar — but the grid does once its content overflows
+    // max-h-[65vh]. Without compensating, the scrollbar's width shrinks the
+    // grid's 7 columns relative to the header's, and the misalignment grows
+    // toward the right-hand days (Sat/Sun). Measure it and pad the header by
+    // the same amount so both rows' columns line up on every platform.
+    const [scrollbarWidth, setScrollbarWidth] = useState(0);
+
+    useLayoutEffect(() => {
+        const measure = () => {
+            if (scrollRef.current) {
+                setScrollbarWidth(
+                    scrollRef.current.offsetWidth -
+                        scrollRef.current.clientWidth,
+                );
+            }
+        };
+
+        measure();
+        window.addEventListener('resize', measure);
+
+        return () => window.removeEventListener('resize', measure);
+    }, [posts]);
+
     // Scroll the earliest post of the week to the top of the grid — on week
     // navigation, and the moment a week goes from empty to freshly
     // generated. Not on every in-place edit/regenerate, which would jerk the
@@ -762,8 +786,13 @@ export default function Schedule({
                         </div>
                     )}
 
-                    {/* Day header row, aligned to the hour rail + 7 day columns below. */}
-                    <div className="flex border-b border-border">
+                    {/* Day header row, aligned to the hour rail + 7 day columns below.
+                        paddingRight compensates for the scrollable grid's scrollbar
+                        (see scrollbarWidth above) so both rows' columns line up. */}
+                    <div
+                        className="flex border-b border-border"
+                        style={{ paddingRight: scrollbarWidth }}
+                    >
                         <div className="w-14 shrink-0" />
                         <div className="grid flex-1 grid-cols-7">
                             {DAY_LABELS.map((label, i) => {
