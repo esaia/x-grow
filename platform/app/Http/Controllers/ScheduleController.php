@@ -16,6 +16,9 @@ use RuntimeException;
 
 class ScheduleController extends Controller
 {
+    /** Minimum minutes between two randomly-generated posts on the same day, so their calendar chips never overlap. */
+    private const MIN_GAP_MINUTES = 60;
+
     public function __construct(
         private readonly ClaudeService $claude,
         private readonly PromptBuilder $prompts,
@@ -156,19 +159,39 @@ class ScheduleController extends Controller
     }
 
     /**
-     * Pick $count distinct 15-minute slots between $startMinutes and
-     * $endMinutes (inclusive), in chronological order.
+     * Pick $count random times (in minutes-from-midnight) between
+     * $startMinutes and $endMinutes, at least MIN_GAP_MINUTES apart so
+     * their calendar chips never visually overlap. Shrinks the gap (down to
+     * one 15-minute slot) only if the range is too narrow to fit $count
+     * posts at the full minimum gap.
      *
      * @return array<int, int>
      */
     private function randomTimesInRange(int $startMinutes, int $endMinutes, int $count): array
     {
-        $slots = range($startMinutes, $endMinutes, 15);
-        shuffle($slots);
-        $chosen = array_slice($slots, 0, min($count, count($slots)));
-        sort($chosen);
+        $minGap = self::MIN_GAP_MINUTES;
 
-        return $chosen;
+        while ($count > 1 && ($count - 1) * $minGap > $endMinutes - $startMinutes && $minGap > 15) {
+            $minGap -= 15;
+        }
+
+        $slackUnits = $count > 1
+            ? intdiv(($endMinutes - $startMinutes) - ($count - 1) * $minGap, 15)
+            : intdiv($endMinutes - $startMinutes, 15);
+
+        $offsets = [];
+
+        for ($i = 0; $i < $count; $i++) {
+            $offsets[] = random_int(0, max(0, $slackUnits));
+        }
+
+        sort($offsets);
+
+        return array_map(
+            fn (int $offsetUnits, int $i) => $startMinutes + ($offsetUnits * 15) + ($i * $minGap),
+            $offsets,
+            array_keys($offsets),
+        );
     }
 
     /**

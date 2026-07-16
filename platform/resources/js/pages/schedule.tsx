@@ -32,6 +32,11 @@ import {
 import { Slider } from '@/components/ui/slider';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
 type ScheduledPost = {
@@ -63,7 +68,7 @@ const FALLBACK_CATEGORY_COLOR = 'bg-muted text-muted-foreground';
 // Calendar grid geometry: 24 hourly rows, each ROW_HEIGHT px tall.
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 const ROW_HEIGHT = 56;
-const CHIP_HEIGHT = 46;
+const CHIP_HEIGHT = 52;
 
 function hourLabel(hour: number): string {
     if (hour === 0) {
@@ -237,23 +242,33 @@ function CalendarChip({
         (Number(hourStr) + Number(minuteStr) / 60) * ROW_HEIGHT;
 
     return (
-        <button
-            type="button"
-            onClick={onOpen}
-            title={categoryLabel}
-            style={{ top, height: CHIP_HEIGHT }}
-            className={cn(
-                'absolute inset-x-1 cursor-pointer overflow-hidden rounded-md px-2 py-1 text-left shadow-sm transition-transform hover:z-10 hover:scale-[1.02]',
-                color,
-            )}
-        >
-            <div className="text-[10px] font-semibold whitespace-nowrap opacity-90">
-                {formatTime(post.scheduled_at)}
-            </div>
-            <div className="line-clamp-2 text-[11px] leading-tight font-medium">
-                {post.content}
-            </div>
-        </button>
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <button
+                    type="button"
+                    onClick={onOpen}
+                    style={{ top, height: CHIP_HEIGHT }}
+                    className={cn(
+                        'absolute inset-x-1 cursor-pointer overflow-hidden rounded-md px-2 pt-1 pb-1.5 text-left shadow-sm transition-transform hover:z-10 hover:scale-[1.02]',
+                        color,
+                    )}
+                >
+                    <div className="text-[10px] font-semibold whitespace-nowrap opacity-90">
+                        {formatTime(post.scheduled_at)}
+                    </div>
+                    <div className="line-clamp-2 text-[11px] leading-tight font-medium">
+                        {post.content}
+                    </div>
+                </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" className="max-w-xs whitespace-pre-wrap">
+                <p className="mb-1 font-semibold">
+                    {formatTime(post.scheduled_at)}
+                    {categoryLabel ? ` · ${categoryLabel}` : ''}
+                </p>
+                <p>{post.content}</p>
+            </TooltipContent>
+        </Tooltip>
     );
 }
 
@@ -464,6 +479,7 @@ export default function Schedule({
                 <Heading
                     title="Weekly Schedule"
                     description="Generate a week's worth of AI-written draft posts, spaced out across the days."
+                    className="mb-0"
                 />
 
                 <Card className="w-full">
@@ -598,14 +614,6 @@ export default function Schedule({
                                 </Button>
                             </form>
                         </div>
-
-                        {weekHasPosts && (
-                            <p className="text-xs text-muted-foreground">
-                                This week already has posts — click a post
-                                below to edit or regenerate it, or delete it
-                                first to generate a fresh batch.
-                            </p>
-                        )}
 
                         <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
                             <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
