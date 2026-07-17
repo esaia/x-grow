@@ -18,10 +18,13 @@ class XPostingService
     private const TWEETS_URL = 'https://api.x.com/2/tweets';
 
     /**
-     * Publish the post's content to X, splitting it into a reply chain if it
-     * contains multiple blank-line-separated segments (thread format). On
-     * any failure the post is marked failed with an error message and no
-     * further segments are attempted.
+     * Publish the post's content to X as a single tweet. Weekly-schedule
+     * content (the only source of ScheduledPost::content — see
+     * PromptBuilder::weeklyBatchPrompt) is always one tweet under 280
+     * characters, even when it uses blank lines internally for visual
+     * pacing (e.g. the "Question / Poll" format) — that's never a signal
+     * to split into a reply-chain thread. On failure the post is marked
+     * failed with an error message.
      */
     public function publish(ScheduledPost $post): void
     {
@@ -44,38 +47,21 @@ class XPostingService
             }
         }
 
-        $segments = $this->splitIntoTweets($post->content);
+        $response = Http::withToken($account->access_token)->post(self::TWEETS_URL, ['text' => $post->content]);
 
-        $previousId = null;
-        $rootId = null;
+        if ($response->failed()) {
+            $post->update([
+                'status' => ScheduledPost::STATUS_FAILED,
+                'error' => 'X API error ('.$response->status().'): '.$response->body(),
+            ]);
 
-        foreach ($segments as $segment) {
-            $body = ['text' => $segment];
-
-            if ($previousId !== null) {
-                $body['reply'] = ['in_reply_to_tweet_id' => $previousId];
-            }
-
-            $response = Http::withToken($account->access_token)->post(self::TWEETS_URL, $body);
-
-            if ($response->failed()) {
-                $post->update([
-                    'status' => ScheduledPost::STATUS_FAILED,
-                    'error' => 'X API error ('.$response->status().'): '.$response->body(),
-                ]);
-
-                return;
-            }
-
-            $tweetId = $response->json('data.id');
-            $rootId ??= $tweetId;
-            $previousId = $tweetId;
+            return;
         }
 
         $post->update([
             'status' => ScheduledPost::STATUS_POSTED,
             'posted_at' => now(),
-            'x_tweet_id' => $rootId,
+            'x_tweet_id' => $response->json('data.id'),
             'error' => null,
         ]);
     }
@@ -111,19 +97,5 @@ class XPostingService
         ]);
 
         return true;
-    }
-
-    /**
-     * Splits a weekly-schedule post's content into one or more tweet-sized
-     * chunks for thread posting (blank-line-separated, matching the format
-     * PromptBuilder already uses for thread-format content).
-     *
-     * @return array<int, string>
-     */
-    private function splitIntoTweets(string $content): array
-    {
-        $segments = array_values(array_filter(array_map('trim', preg_split('/\n\s*\n/', $content) ?: [])));
-
-        return $segments === [] ? [$content] : $segments;
     }
 }
