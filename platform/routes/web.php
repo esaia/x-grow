@@ -22,6 +22,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Weekly schedule of AI-generated draft posts.
     Route::get('schedule', [ScheduleController::class, 'index'])->name('schedule.index');
     Route::post('schedule/generate', [ScheduleController::class, 'generate'])->name('schedule.generate');
+    Route::post('schedule/posts', [ScheduleController::class, 'store'])->name('schedule.store');
+    Route::post('schedule/posts/generate-one', [ScheduleController::class, 'generateOne'])->name('schedule.generate-one');
     Route::put('schedule/posts/{post}', [ScheduleController::class, 'update'])->name('schedule.update');
     Route::post('schedule/posts/{post}/regenerate', [ScheduleController::class, 'regenerate'])->name('schedule.regenerate');
     Route::delete('schedule/posts/{post}', [ScheduleController::class, 'destroy'])->name('schedule.destroy');

@@ -4,8 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Models\Generation;
 use App\Models\ScheduledPost;
+use App\Models\User;
 use App\Services\ClaudeService;
 use App\Services\PromptBuilder;
+use Carbon\CarbonInterface;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -98,7 +100,7 @@ class ScheduleController extends Controller
         );
 
         $system = $this->prompts->systemPrompt($user->voiceProfile);
-        $prompt = $this->prompts->weeklyBatchPrompt($categories);
+        $prompt = $this->prompts->weeklyBatchPrompt($categories, $this->recentPostContents($user, $weekStart, $weekEnd));
 
         // A full week's batch (up to 42 posts) can take longer than PHP's
         // default 30s execution limit to generate in one Claude call.
@@ -166,6 +168,143 @@ class ScheduleController extends Controller
         return back()->with('toast', 'Weekly schedule generated.');
     }
 
+    /**
+     * Create a single draft post manually (empty-slot "Add post" flow).
+     */
+    public function store(Request $request): RedirectResponse
+    {
+        $data = $request->validate([
+            'content' => ['required', 'string'],
+            'category' => ['required', 'string', 'in:'.implode(',', array_keys(PromptBuilder::POST_CATEGORIES))],
+            'date' => ['required', 'date'],
+            'time' => ['required', 'date_format:H:i'],
+            'timezone' => ['nullable', 'string', 'timezone'],
+        ]);
+
+        $user = $request->user();
+        $scheduledAt = Carbon::parse($data['date'])->setTimeFromTimeString($data['time']);
+
+        if ($this->hasConflict($user, $scheduledAt)) {
+            return back()->withErrors([
+                'time' => 'Another post is already scheduled at that time on this day. Pick a different time.',
+            ]);
+        }
+
+        $user->scheduledPosts()->create([
+            'content' => $data['content'],
+            'category' => $data['category'],
+            'status' => ScheduledPost::STATUS_DRAFT,
+            'scheduled_at' => $scheduledAt,
+            'timezone' => $data['timezone'] ?? config('app.timezone'),
+        ]);
+
+        return back()->with('toast', 'Post added to schedule.');
+    }
+
+    /**
+     * AI-generate content for a single new empty-slot post and create it
+     * directly as a draft (the "Generate with AI" option in the "Add post"
+     * flow — mirrors regenerate() but for a post that doesn't exist yet).
+     */
+    public function generateOne(Request $request): RedirectResponse
+    {
+        $data = $request->validate([
+            'category' => ['required', 'string', 'in:'.implode(',', array_keys(PromptBuilder::POST_CATEGORIES))],
+            'date' => ['required', 'date'],
+            'time' => ['required', 'date_format:H:i'],
+            'timezone' => ['nullable', 'string', 'timezone'],
+        ]);
+
+        $user = $request->user();
+        $scheduledAt = Carbon::parse($data['date'])->setTimeFromTimeString($data['time']);
+
+        if ($this->hasConflict($user, $scheduledAt)) {
+            return back()->withErrors([
+                'time' => 'Another post is already scheduled at that time on this day. Pick a different time.',
+            ]);
+        }
+
+        try {
+            $generated = $this->generateSingle($user, $data['category']);
+        } catch (RuntimeException $e) {
+            return back()->withErrors(['generate' => $e->getMessage()]);
+        }
+
+        $user->scheduledPosts()->create([
+            'generation_id' => $generated['generation_id'],
+            'content' => $generated['content'],
+            'category' => $data['category'],
+            'status' => ScheduledPost::STATUS_DRAFT,
+            'scheduled_at' => $scheduledAt,
+            'timezone' => $data['timezone'] ?? config('app.timezone'),
+        ]);
+
+        return back()->with('toast', 'Post generated and added to schedule.');
+    }
+
+    /**
+     * The user's most recent post content (excluding the given date range, if
+     * any — used to leave out the week currently being (re)generated), most
+     * recent first. Fed back into the prompt so the model doesn't repeat
+     * topics/angles/structures it already used.
+     *
+     * @return array<int, string>
+     */
+    private function recentPostContents(User $user, ?Carbon $excludeStart = null, ?Carbon $excludeEnd = null): array
+    {
+        return $user->scheduledPosts()
+            ->when(
+                $excludeStart && $excludeEnd,
+                fn ($query) => $query->whereNotBetween('scheduled_at', [$excludeStart, $excludeEnd]),
+            )
+            ->orderByDesc('scheduled_at')
+            ->limit(40)
+            ->pluck('content')
+            ->all();
+    }
+
+    /**
+     * True if the user already has a post at exactly this instant (optionally
+     * excluding one post's own row, for in-place edits).
+     */
+    private function hasConflict(User $user, CarbonInterface $scheduledAt, ?int $excludePostId = null): bool
+    {
+        return $user->scheduledPosts()
+            ->when($excludePostId, fn ($query) => $query->where('id', '!=', $excludePostId))
+            ->where('scheduled_at', $scheduledAt)
+            ->exists();
+    }
+
+    /**
+     * One Claude call for a single post in the given category, logged as a
+     * Generation. Shared by regenerate() (existing post) and generateOne()
+     * (brand-new post).
+     *
+     * @return array{content: string, generation_id: int}
+     */
+    private function generateSingle(User $user, string $category): array
+    {
+        $system = $this->prompts->systemPrompt($user->voiceProfile);
+        $prompt = $this->prompts->weeklyBatchPrompt([$category], $this->recentPostContents($user));
+
+        $result = $this->claude->generateOptions($system, $prompt, 1, 512);
+
+        $generation = $user->generations()->create([
+            'type' => Generation::TYPE_POST,
+            'input_context' => null,
+            'meta' => ['weekly_schedule' => true, 'regenerate' => true, 'category' => $category],
+            'output' => $result['options'],
+            'model' => $result['model'],
+            'tokens_in' => $result['input_tokens'],
+            'tokens_out' => $result['output_tokens'],
+        ]);
+
+        return [
+            'content' => $result['options'][0] ?? '',
+            'generation_id' => $generation->id,
+        ];
+    }
+
     private function toMinutes(string $time): int
     {
         [$hours, $minutes] = explode(':', $time);
@@ -225,12 +364,7 @@ class ScheduleController extends Controller
 
         $scheduledAt = $post->scheduled_at->copy()->setTimeFromTimeString($data['time']);
 
-        $conflict = $request->user()->scheduledPosts()
-            ->where('id', '!=', $post->id)
-            ->where('scheduled_at', $scheduledAt)
-            ->exists();
-
-        if ($conflict) {
+        if ($this->hasConflict($request->user(), $scheduledAt, $post->id)) {
             return back()->withErrors([
                 'time' => 'Another post is already scheduled at that time on this day. Pick a different time.',
             ]);
@@ -274,29 +408,17 @@ class ScheduleController extends Controller
         ]);
 
         $user = $request->user();
-        $system = $this->prompts->systemPrompt($user->voiceProfile);
-        $prompt = $this->prompts->weeklyBatchPrompt([$data['category']]);
 
         try {
-            $result = $this->claude->generateOptions($system, $prompt, 1, 512);
+            $generated = $this->generateSingle($user, $data['category']);
         } catch (RuntimeException $e) {
             return back()->withErrors(['regenerate' => $e->getMessage()]);
         }
 
-        $generation = $user->generations()->create([
-            'type' => Generation::TYPE_POST,
-            'input_context' => null,
-            'meta' => ['weekly_schedule' => true, 'regenerate' => true, 'category' => $data['category']],
-            'output' => $result['options'],
-            'model' => $result['model'],
-            'tokens_in' => $result['input_tokens'],
-            'tokens_out' => $result['output_tokens'],
-        ]);
-
         $post->update([
-            'content' => $result['options'][0] ?? $post->content,
+            'content' => $generated['content'] !== '' ? $generated['content'] : $post->content,
             'category' => $data['category'],
-            'generation_id' => $generation->id,
+            'generation_id' => $generated['generation_id'],
             // Regenerated content has never been reviewed, so it can't stay
             // Scheduled — otherwise unreviewed text could get auto-posted.
             'status' => ScheduledPost::STATUS_DRAFT,

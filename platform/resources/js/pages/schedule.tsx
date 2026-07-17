@@ -67,6 +67,8 @@ const STATUS_COLORS: Record<string, string> = {
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+const LEGEND_CATEGORIES_STORAGE_KEY = 'schedule.legendCategories';
+
 // Rounded, colorful pill per category — matches the legend/badge colors
 // backend PromptBuilder::POST_CATEGORIES slugs map to.
 const CATEGORY_COLORS: Record<string, string> = {
@@ -262,7 +264,13 @@ function CalendarChip({
             <TooltipTrigger asChild>
                 <button
                     type="button"
-                    onClick={onOpen}
+                    onClick={(e) => {
+                        // Chips sit on top of the day column's own
+                        // click-to-add handler — without this, opening a
+                        // post would also open the "Add post" modal behind it.
+                        e.stopPropagation();
+                        onOpen();
+                    }}
                     style={{ top, height: CHIP_HEIGHT }}
                     className={cn(
                         'absolute inset-x-1 cursor-pointer overflow-hidden rounded-md px-2 pt-1 pb-1.5 text-left shadow-sm transition-transform hover:z-10 hover:scale-[1.02]',
@@ -330,6 +338,38 @@ export default function Schedule({
         categories: categories.map((c) => c.slug),
     });
 
+    // Which legend categories are toggled on/off persists across page
+    // refreshes — without this every reload re-enables all categories,
+    // discarding the user's chosen set. Loaded client-side only (after the
+    // SSR/hydration render, which must match the server's all-enabled
+    // markup) and re-saved whenever it changes.
+    useEffect(() => {
+        const saved = window.localStorage.getItem(
+            LEGEND_CATEGORIES_STORAGE_KEY,
+        );
+        if (!saved) {
+            return;
+        }
+
+        try {
+            const parsed = JSON.parse(saved);
+            if (
+                Array.isArray(parsed) &&
+                parsed.every((slug) => typeof slug === 'string')
+            ) {
+                const valid = parsed.filter((slug) =>
+                    categories.some((c) => c.slug === slug),
+                );
+                if (valid.length > 0) {
+                    form.setData('categories', valid);
+                }
+            }
+        } catch {
+            // ignore malformed storage
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     // scheduled_at is stored as a naive wall-clock value — the browser's own
     // IANA timezone is sent alongside it so the backend can later compute
     // the real due instant for auto-posting (see ScheduledPost::realScheduledAt).
@@ -346,6 +386,16 @@ export default function Schedule({
     const [draftStatus, setDraftStatus] = useState('draft');
     const [scheduling, setScheduling] = useState(false);
     const [schedulingAll, setSchedulingAll] = useState(false);
+
+    // Clicking an empty spot on the calendar opens this modal, pre-filled
+    // with the day/time that was clicked, to either write a post by hand or
+    // generate one on the spot.
+    const [addSlot, setAddSlot] = useState<{ date: string; time: string } | null>(null);
+    const [addContent, setAddContent] = useState('');
+    const [addCategory, setAddCategory] = useState('');
+    const [addSaving, setAddSaving] = useState(false);
+    const [addGenerating, setAddGenerating] = useState(false);
+    const [addError, setAddError] = useState<string | null>(null);
 
     // "Today" and the live now-line are computed client-side only — the
     // server and browser clocks/timezones can disagree, and computing this
@@ -422,9 +472,14 @@ export default function Schedule({
             return;
         }
 
-        form.setData(
-            'categories',
-            isEnabled ? current.filter((c) => c !== slug) : [...current, slug],
+        const next = isEnabled
+            ? current.filter((c) => c !== slug)
+            : [...current, slug];
+
+        form.setData('categories', next);
+        window.localStorage.setItem(
+            LEGEND_CATEGORIES_STORAGE_KEY,
+            JSON.stringify(next),
         );
     };
 
@@ -471,6 +526,85 @@ export default function Schedule({
 
     const closeModal = () => setEditingPost(null);
 
+    // Opens the "Add post" modal for the day column that was clicked, at the
+    // hour implied by the click's vertical position, snapped to 15 minutes.
+    const openAddSlot = (dayIndex: number, e: React.MouseEvent<HTMLDivElement>) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const offsetY = e.clientY - rect.top;
+        const totalMinutes = (offsetY / ROW_HEIGHT) * 60;
+        const snapped = Math.min(
+            23 * 60 + 45,
+            Math.max(0, Math.round(totalMinutes / 15) * 15),
+        );
+        const hour = Math.floor(snapped / 60);
+        const minute = snapped % 60;
+
+        setAddSlot({
+            date: toDateKey(toLocalDate(weekStart, dayIndex)),
+            time: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+        });
+        setAddContent('');
+        setAddCategory(categories[0]?.slug ?? '');
+        setAddError(null);
+    };
+
+    const closeAddModal = () => setAddSlot(null);
+
+    const addManualPost = () => {
+        if (!addSlot) {
+            return;
+        }
+
+        setAddSaving(true);
+        setAddError(null);
+        router.post(
+            '/schedule/posts',
+            {
+                content: addContent,
+                category: addCategory,
+                date: addSlot.date,
+                time: addSlot.time,
+                timezone,
+            },
+            {
+                preserveScroll: true,
+                onSuccess: () => closeAddModal(),
+                onError: (errors) =>
+                    setAddError(errors.time ?? 'Could not add this post.'),
+                onFinish: () => setAddSaving(false),
+            },
+        );
+    };
+
+    const generateAndAddPost = () => {
+        if (!addSlot) {
+            return;
+        }
+
+        setAddGenerating(true);
+        setAddError(null);
+        router.post(
+            '/schedule/posts/generate-one',
+            {
+                category: addCategory,
+                date: addSlot.date,
+                time: addSlot.time,
+                timezone,
+            },
+            {
+                preserveScroll: true,
+                onSuccess: () => closeAddModal(),
+                onError: (errors) =>
+                    setAddError(
+                        errors.time ??
+                            errors.generate ??
+                            'Could not generate this post.',
+                    ),
+                onFinish: () => setAddGenerating(false),
+            },
+        );
+    };
+
     const saveChanges = () => {
         if (!editingPost) {
             return;
@@ -502,6 +636,7 @@ export default function Schedule({
         }
 
         setRegenerating(true);
+        setSaveError(null);
         router.post(
             `/schedule/posts/${editingPost.id}/regenerate`,
             { category: draftCategory },
@@ -518,6 +653,10 @@ export default function Schedule({
                         setDraftStatus(updated.status);
                     }
                 },
+                onError: (errors) =>
+                    setSaveError(
+                        errors.regenerate ?? 'Could not regenerate this post.',
+                    ),
                 onFinish: () => setRegenerating(false),
             },
         );
@@ -841,7 +980,8 @@ export default function Schedule({
                                 return (
                                     <div
                                         key={label}
-                                        className="relative border-l border-border first:border-l-0"
+                                        onClick={(e) => openAddSlot(i, e)}
+                                        className="relative cursor-pointer border-l border-border first:border-l-0 hover:bg-muted/30"
                                         style={{
                                             height: HOURS.length * ROW_HEIGHT,
                                         }}
@@ -1127,6 +1267,126 @@ export default function Schedule({
                                         </Button>
                                     </>
                                 )}
+                            </div>
+                        </div>
+                    )}
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                open={addSlot !== null}
+                onOpenChange={(open) => !open && closeAddModal()}
+            >
+                <DialogContent className="sm:max-w-md">
+                    {addSlot && (
+                        <div className="flex flex-col gap-5">
+                            <span className="w-fit rounded-full bg-primary px-4 py-1.5 text-xs font-bold whitespace-nowrap text-primary-foreground">
+                                {formatDayBadge(addSlot.date)}
+                            </span>
+
+                            <h2 className="text-xl font-bold">Add post</h2>
+
+                            <div className="grid gap-1.5">
+                                <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                    Time
+                                </Label>
+                                <Select
+                                    value={addSlot.time}
+                                    onValueChange={(value) => {
+                                        setAddSlot({ ...addSlot, time: value });
+                                        setAddError(null);
+                                    }}
+                                >
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent className="max-h-72">
+                                        {START_TIME_OPTIONS.map((option) => (
+                                            <SelectItem
+                                                key={option.value}
+                                                value={option.value}
+                                            >
+                                                {option.label}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                {addError && (
+                                    <p className="text-xs text-destructive">
+                                        {addError}
+                                    </p>
+                                )}
+                            </div>
+
+                            <div className="grid gap-1.5">
+                                <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                    Pattern
+                                </Label>
+                                <div className="flex flex-wrap gap-2">
+                                    {categories.map((category) => (
+                                        <PatternOption
+                                            key={category.slug}
+                                            category={category}
+                                            selected={
+                                                addCategory === category.slug
+                                            }
+                                            onSelect={() =>
+                                                setAddCategory(category.slug)
+                                            }
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="grid gap-1.5">
+                                <div className="flex items-center justify-between">
+                                    <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                        Content
+                                    </Label>
+                                    <span className="text-xs text-muted-foreground">
+                                        {addContent.length}/280
+                                    </span>
+                                </div>
+                                <Textarea
+                                    value={addContent}
+                                    onChange={(e) =>
+                                        setAddContent(e.target.value)
+                                    }
+                                    placeholder="Write it yourself, or generate one with AI below."
+                                    className="min-h-32"
+                                />
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    className="flex-1"
+                                    disabled={addGenerating || addSaving}
+                                    onClick={generateAndAddPost}
+                                >
+                                    {addGenerating ? (
+                                        <Spinner className="size-4" />
+                                    ) : (
+                                        <Sparkles className="size-4" />
+                                    )}
+                                    Generate with AI
+                                </Button>
+                                <Button
+                                    type="button"
+                                    className="flex-1"
+                                    disabled={
+                                        addSaving ||
+                                        addGenerating ||
+                                        addContent.trim() === ''
+                                    }
+                                    onClick={addManualPost}
+                                >
+                                    {addSaving && (
+                                        <Spinner className="size-4" />
+                                    )}
+                                    Add post
+                                </Button>
                             </div>
                         </div>
                     )}
