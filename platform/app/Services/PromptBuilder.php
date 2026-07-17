@@ -183,8 +183,12 @@ class PromptBuilder
      * legend, and so the week has guaranteed variety.
      *
      * @param  array<int, string>  $categories  One POST_CATEGORIES key per post, in order.
+     * @param  array<int, string>  $recentPosts  Recently published/scheduled post content
+     *                                           (most recent first) to steer the model away
+     *                                           from repeating the same topics, angles, or
+     *                                           sentence structures it already used.
      */
-    public function weeklyBatchPrompt(array $categories): string
+    public function weeklyBatchPrompt(array $categories, array $recentPosts = []): string
     {
         $total = count($categories);
 
@@ -193,11 +197,26 @@ class PromptBuilder
             ->map(fn (string $category, int $i) => ($i + 1).'. '.self::POST_CATEGORIES[$category].' — '.$this->categoryGuidance($category))
             ->implode("\n");
 
+        $recentSection = '';
+
+        if ($recentPosts !== []) {
+            $recentList = collect($recentPosts)
+                ->map(fn (string $post) => '- '.str_replace("\n", ' ', trim($post)))
+                ->implode("\n");
+
+            $recentSection = 'Posts already published or scheduled recently — do NOT repeat these topics, angles, '.
+                'specific examples, or sentence structures. Each new post must explore genuinely new territory, '.
+                "not a reworded version of one of these:\n\"\"\"\n{$recentList}\n\"\"\"\n\n";
+        }
+
         return "Write {$total} standalone posts (single tweets) to fill out a week's posting schedule for the ".
             "account owner.\n\n".
+            "{$recentSection}".
             "Write them in this exact order, one post per numbered style below:\n{$list}\n\n".
             'Each post must be under 280 characters, able to stand on its own, earn likes/replies/reposts, and '.
             "genuinely fit its assigned style — do not blend styles or repeat the same idea across posts.\n\n".
+            'Vary the opening words, sentence structure, and format across every post in this batch — no two '.
+            "posts should follow the same template, even within the same style.\n\n".
             'The style name (e.g. "Hot Take", "Tip / Value") is for your reference only, never for the reader — '.
             'do not begin a post with its style name or category as a label or prefix (e.g. never start a post '.
             'with "tip:", "hot take:", "question:", or similar).';
@@ -207,9 +226,14 @@ class PromptBuilder
     {
         return match ($category) {
             'question' => $this->engagementQuestionGuidance(),
-            'story' => 'Tell a short, concrete story or lesson from real experience.',
-            'opinion' => 'Share a punchy, defensible contrarian point of view.',
-            'tip' => 'Give one specific, actionable piece of advice the reader can use today.',
+            'story' => 'Tell it in one of these variants, mixing across posts: (a) a short concrete scenario or '.
+                'mini-story with a clear turn or lesson at the end; (b) a two-line before/after or then/now '.
+                'contrast; (c) a dash-prefixed list of 3-4 short lessons tied to one specific theme.',
+            'opinion' => 'Share a punchy, defensible contrarian point of view, in one of these variants: (a) a '.
+                'single blunt declarative sentence; (b) a "most people think X, actually Y" contrast; (c) a short '.
+                'list of 2-3 concrete examples backing one contrarian claim.',
+            'tip' => 'Give one specific, actionable piece of advice, in one of these variants: (a) a single '.
+                'imperative sentence; (b) a "do X instead of Y" contrast; (c) a 2-3 step micro-checklist.',
             'promo' => "Naturally mention what the owner is building or working on, using their profile's "
                 .'projects/links when relevant — confident, not salesy.',
             default => 'Write a standalone post that fits the owner\'s usual topics.',
