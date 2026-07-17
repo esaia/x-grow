@@ -31,7 +31,7 @@ class ClaudeService
      *
      * @return array{text: string, input_tokens: int, output_tokens: int, model: string}
      */
-    public function message(string $system, string $prompt, int $maxTokens = 1024, float $temperature = 1.0): array
+    public function message(string $system, string $prompt, int $maxTokens = 1024): array
     {
         if ($this->apiKey === '') {
             throw new RuntimeException('ANTHROPIC_API_KEY is not set. Add it to platform/.env.');
@@ -43,10 +43,11 @@ class ClaudeService
             'content-type' => 'application/json',
         ])
             ->timeout(170)
+            // `temperature` is deprecated/rejected by current Claude models —
+            // do not add it back.
             ->post($this->baseUrl.'/v1/messages', [
                 'model' => $this->model,
                 'max_tokens' => $maxTokens,
-                'temperature' => $temperature,
                 'system' => $system,
                 'messages' => [
                     ['role' => 'user', 'content' => $prompt],

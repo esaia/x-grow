@@ -57,7 +57,6 @@ class VoiceProfileController extends Controller
                 $prompts->analyzeSystemPrompt(),
                 $prompts->analyzePrompt($posts->all()),
                 maxTokens: 600,
-                temperature: 0.4,
             );
         } catch (RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 502);
