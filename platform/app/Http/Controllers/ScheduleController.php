@@ -103,7 +103,7 @@ class ScheduleController extends Controller
         $prompt = $this->prompts->weeklyBatchPrompt($categories, $this->recentPostContents($user, $weekStart, $weekEnd));
 
         // A full week's batch (up to 42 posts) can take longer than PHP's
-        // default 30s execution limit to generate in one Claude call.
+        // default 30s execution limit to generate in one OpenAI call.
         set_time_limit(180);
 
         try {
@@ -202,9 +202,10 @@ class ScheduleController extends Controller
     }
 
     /**
-     * AI-generate content for a single new empty-slot post and create it
-     * directly as a draft (the "Generate with AI" option in the "Add post"
-     * flow — mirrors regenerate() but for a post that doesn't exist yet).
+     * AI-generate content for a single new empty-slot post, without saving
+     * it — the "Generate with AI" option in the "Add post" modal, which
+     * fills the content field for review/editing. The user still has to
+     * click "Add post" (store()) to actually create it.
      */
     public function generateOne(Request $request): RedirectResponse
     {
@@ -230,16 +231,10 @@ class ScheduleController extends Controller
             return back()->withErrors(['generate' => $e->getMessage()]);
         }
 
-        $user->scheduledPosts()->create([
-            'generation_id' => $generated['generation_id'],
+        return back()->with('generatedDraft', [
             'content' => $generated['content'],
             'category' => $data['category'],
-            'status' => ScheduledPost::STATUS_DRAFT,
-            'scheduled_at' => $scheduledAt,
-            'timezone' => $data['timezone'] ?? config('app.timezone'),
         ]);
-
-        return back()->with('toast', 'Post generated and added to schedule.');
     }
 
     /**
@@ -276,7 +271,7 @@ class ScheduleController extends Controller
     }
 
     /**
-     * One Claude call for a single post in the given category, logged as a
+     * One OpenAI call for a single post in the given category, logged as a
      * Generation. Shared by regenerate() (existing post) and generateOne()
      * (brand-new post).
      *
@@ -494,6 +489,25 @@ class ScheduleController extends Controller
         ScheduledPost::whereIn('id', $ids)->update(['status' => ScheduledPost::STATUS_SCHEDULED, 'error' => null]);
 
         return back()->with('toast', 'All draft posts this week are now scheduled.');
+    }
+
+    /**
+     * Delete every post in a given week (draft, scheduled, posted, or
+     * failed) so the week is empty and can be regenerated from scratch —
+     * "Generate week" is disabled while the week already has any posts.
+     */
+    public function emptyWeek(Request $request): RedirectResponse
+    {
+        $data = $request->validate(['week_start' => ['required', 'date']]);
+
+        $weekStart = $this->resolveWeekStart($data['week_start']);
+        $weekEnd = $weekStart->copy()->endOfWeek(Carbon::SUNDAY);
+
+        $request->user()->scheduledPosts()
+            ->whereBetween('scheduled_at', [$weekStart, $weekEnd])
+            ->delete();
+
+        return back()->with('toast', 'Week emptied.');
     }
 
     private function resolveWeekStart(?string $date): Carbon

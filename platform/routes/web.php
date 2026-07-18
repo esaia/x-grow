@@ -30,6 +30,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('schedule/posts/{post}/schedule', [ScheduleController::class, 'schedule'])->name('schedule.schedule');
     Route::post('schedule/posts/{post}/unschedule', [ScheduleController::class, 'unschedule'])->name('schedule.unschedule');
     Route::post('schedule/schedule-all', [ScheduleController::class, 'scheduleAll'])->name('schedule.schedule-all');
+    Route::post('schedule/empty-week', [ScheduleController::class, 'emptyWeek'])->name('schedule.empty-week');
 
     // Connect the Chrome extension (Sanctum tokens).
     Route::get('connect', [ConnectExtensionController::class, 'show'])->name('connect.show');

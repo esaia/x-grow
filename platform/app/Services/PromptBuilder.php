@@ -23,6 +23,8 @@ class PromptBuilder
         'opinion' => 'Hot Take',
         'tip' => 'Tip / Value',
         'promo' => 'Share Your Work',
+        'result' => 'Result / Case Study',
+        'resource' => 'Resource / Curation',
     ];
 
     /**
@@ -51,6 +53,12 @@ class PromptBuilder
                 .'"game-changer", "seamless", "elevate", "in today\'s world", "at the end of the day".',
             '- Don\'t end every post with a rhetorical question — vary how posts close.',
             '- Vary sentence length. Short fragments are fine. Lowercase is fine if the samples use it.',
+            '',
+            'Use simple, easy English:',
+            '- Prefer short, everyday words over fancy or academic ones (e.g. "use" not "utilize", "help" not '
+                .'"facilitate", "show" not "demonstrate").',
+            '- Keep sentences short and direct. Avoid long, nested clauses.',
+            '- Write at a level a middle schooler could easily read, without sounding dumbed-down.',
         ];
 
         $tone = $profile?->tone ?: 'balanced';
@@ -236,6 +244,14 @@ class PromptBuilder
                 'imperative sentence; (b) a "do X instead of Y" contrast; (c) a 2-3 step micro-checklist.',
             'promo' => "Naturally mention what the owner is building or working on, using their profile's "
                 .'projects/links when relevant — confident, not salesy.',
+            'result' => 'Share a concrete outcome or before/after with a real number or measurable detail, in one '.
+                'of these variants: (a) a single "I did X, here\'s what happened" sentence with a stat; (b) a '.
+                'before/after contrast with numbers on both sides; (c) a short breakdown of what changed and the '.
+                'result it produced. Must be plausible and specific, never vague ("things got better").',
+            'resource' => 'Share a short curated list worth bookmarking, in one of these variants: (a) a '.
+                'numbered list of 3-5 tools/accounts/resources with a one-line reason each; (b) a "save this for '.
+                'later" roundup framed around one theme; (c) a single standout resource recommendation with why '.
+                "it's worth using. Keep every item concrete, never generic filler.",
             default => 'Write a standalone post that fits the owner\'s usual topics.',
         };
     }

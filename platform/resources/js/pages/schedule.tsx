@@ -68,6 +68,7 @@ const STATUS_COLORS: Record<string, string> = {
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 const LEGEND_CATEGORIES_STORAGE_KEY = 'schedule.legendCategories';
+const RANGE_STORAGE_KEY = 'schedule.range';
 
 // Rounded, colorful pill per category — matches the legend/badge colors
 // backend PromptBuilder::POST_CATEGORIES slugs map to.
@@ -77,6 +78,8 @@ const CATEGORY_COLORS: Record<string, string> = {
     opinion: 'bg-violet-500 text-white',
     tip: 'bg-emerald-500 text-white',
     promo: 'bg-pink-500 text-white',
+    result: 'bg-amber-500 text-white',
+    resource: 'bg-cyan-500 text-white',
 };
 
 const FALLBACK_CATEGORY_COLOR = 'bg-muted text-muted-foreground';
@@ -347,12 +350,14 @@ export default function Schedule({
         const saved = window.localStorage.getItem(
             LEGEND_CATEGORIES_STORAGE_KEY,
         );
+
         if (!saved) {
             return;
         }
 
         try {
             const parsed = JSON.parse(saved);
+
             if (
                 Array.isArray(parsed) &&
                 parsed.every((slug) => typeof slug === 'string')
@@ -360,9 +365,40 @@ export default function Schedule({
                 const valid = parsed.filter((slug) =>
                     categories.some((c) => c.slug === slug),
                 );
+
                 if (valid.length > 0) {
                     form.setData('categories', valid);
                 }
+            }
+        } catch {
+            // ignore malformed storage
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // The From/To generation time range persists across page refreshes the
+    // same way the legend categories do above — loaded client-side only
+    // after hydration, then re-saved whenever either value changes.
+    useEffect(() => {
+        const saved = window.localStorage.getItem(RANGE_STORAGE_KEY);
+
+        if (!saved) {
+            return;
+        }
+
+        try {
+            const parsed = JSON.parse(saved);
+
+            if (
+                parsed &&
+                typeof parsed.range_start === 'string' &&
+                typeof parsed.range_end === 'string'
+            ) {
+                form.setData((data) => ({
+                    ...data,
+                    range_start: parsed.range_start,
+                    range_end: parsed.range_end,
+                }));
             }
         } catch {
             // ignore malformed storage
@@ -386,6 +422,8 @@ export default function Schedule({
     const [draftStatus, setDraftStatus] = useState('draft');
     const [scheduling, setScheduling] = useState(false);
     const [schedulingAll, setSchedulingAll] = useState(false);
+    const [emptyingWeek, setEmptyingWeek] = useState(false);
+    const [confirmEmptyWeek, setConfirmEmptyWeek] = useState(false);
 
     // Clicking an empty spot on the calendar opens this modal, pre-filled
     // with the day/time that was clicked, to either write a post by hand or
@@ -462,6 +500,17 @@ export default function Schedule({
         scrollRef.current.scrollTop = earliestHour * ROW_HEIGHT;
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [weekStart, weekHasPosts]);
+
+    const setRange = (key: 'range_start' | 'range_end', value: string) => {
+        form.setData(key, value);
+        window.localStorage.setItem(
+            RANGE_STORAGE_KEY,
+            JSON.stringify({
+                range_start: key === 'range_start' ? value : form.data.range_start,
+                range_end: key === 'range_end' ? value : form.data.range_end,
+            }),
+        );
+    };
 
     const toggleCategory = (slug: string) => {
         const current = form.data.categories;
@@ -593,7 +642,19 @@ export default function Schedule({
             },
             {
                 preserveScroll: true,
-                onSuccess: () => closeAddModal(),
+                // Fills the content field for review/editing — it does not
+                // save the post. The modal stays open; "Add post" saves it.
+                onSuccess: (page) => {
+                    const generated = page.props.generatedDraft as
+                        | { content: string; category: string }
+                        | null
+                        | undefined;
+
+                    if (generated) {
+                        setAddContent(generated.content);
+                        setAddCategory(generated.category);
+                    }
+                },
                 onError: (errors) =>
                     setAddError(
                         errors.time ??
@@ -708,6 +769,19 @@ export default function Schedule({
         );
     };
 
+    const emptyWeek = () => {
+        setEmptyingWeek(true);
+        router.post(
+            '/schedule/empty-week',
+            { week_start: weekStart },
+            {
+                preserveScroll: true,
+                onFinish: () => setEmptyingWeek(false),
+            },
+        );
+        setConfirmEmptyWeek(false);
+    };
+
     const confirmDelete = () => {
         if (deleteTarget === null) {
             return;
@@ -782,7 +856,7 @@ export default function Schedule({
                                     <Select
                                         value={form.data.range_start}
                                         onValueChange={(value) =>
-                                            form.setData('range_start', value)
+                                            setRange('range_start', value)
                                         }
                                     >
                                         <SelectTrigger
@@ -811,7 +885,7 @@ export default function Schedule({
                                     <Select
                                         value={form.data.range_end}
                                         onValueChange={(value) =>
-                                            form.setData('range_end', value)
+                                            setRange('range_end', value)
                                         }
                                     >
                                         <SelectTrigger
@@ -884,6 +958,23 @@ export default function Schedule({
                                         <CalendarCheck className="size-4" />
                                     )}
                                     Schedule all drafts
+                                </Button>
+                            )}
+
+                            {weekHasPosts && (
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={emptyingWeek}
+                                    onClick={() => setConfirmEmptyWeek(true)}
+                                    title="Delete every post this week so it can be generated from scratch"
+                                >
+                                    {emptyingWeek ? (
+                                        <Spinner className="size-4" />
+                                    ) : (
+                                        <Trash2 className="size-4" />
+                                    )}
+                                    Empty week
                                 </Button>
                             )}
                         </div>
@@ -1409,6 +1500,28 @@ export default function Schedule({
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                         <AlertDialogAction onClick={confirmDelete}>
                             Delete
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            <AlertDialog
+                open={confirmEmptyWeek}
+                onOpenChange={(open) => !open && setConfirmEmptyWeek(false)}
+            >
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Empty this week?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Every post this week — including scheduled and
+                            already-posted ones — will be permanently
+                            removed. This can't be undone.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={emptyWeek}>
+                            Empty week
                         </AlertDialogAction>
                     </AlertDialogFooter>
                 </AlertDialogContent>
