@@ -35,10 +35,10 @@ return [
         ],
     ],
 
-    'anthropic' => [
-        'key' => env('ANTHROPIC_API_KEY'),
-        'model' => env('ANTHROPIC_MODEL', 'claude-sonnet-5'),
-        'base_url' => env('ANTHROPIC_BASE_URL', 'https://api.anthropic.com'),
+    'openai' => [
+        'key' => env('OPENAI_API_KEY'),
+        'model' => env('OPENAI_MODEL', 'gpt-4o'),
+        'base_url' => env('OPENAI_BASE_URL', 'https://api.openai.com'),
     ],
 
     // X (Twitter) OAuth2 — used by ConnectXController and XPostingService to

@@ -14,7 +14,7 @@ return new class extends Migration
         Schema::table('voice_profiles', function (Blueprint $table) {
             // The user's X handle (without @), captured when learning their voice.
             $table->string('x_handle')->nullable()->after('audience');
-            // Claude's distilled analysis of the user's writing voice.
+            // The model's distilled analysis of the user's writing voice.
             $table->text('voice_analysis')->nullable()->after('x_handle');
             // The raw posts scraped from their profile (for reference / re-analysis).
             $table->longText('learned_posts')->nullable()->after('voice_analysis');

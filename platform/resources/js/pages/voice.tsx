@@ -141,6 +141,7 @@ export default function Voice({
                                 {tones.map((t) => {
                                     const meta = TONE_META[t];
                                     const selected = form.data.tone === t;
+
                                     return (
                                         <button
                                             type="button"

@@ -6,9 +6,9 @@ use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
 /**
- * Thin wrapper around the Anthropic Messages API.
+ * Thin wrapper around the OpenAI Chat Completions API.
  *
- * The Anthropic API key never leaves the server — the browser extension talks
+ * The OpenAI API key never leaves the server — the browser extension talks
  * to our own /api endpoints, which call this service.
  */
 class ClaudeService
@@ -21,9 +21,9 @@ class ClaudeService
 
     public function __construct()
     {
-        $this->apiKey = (string) config('services.anthropic.key');
-        $this->model = (string) config('services.anthropic.model');
-        $this->baseUrl = rtrim((string) config('services.anthropic.base_url'), '/');
+        $this->apiKey = (string) config('services.openai.key');
+        $this->model = (string) config('services.openai.model');
+        $this->baseUrl = rtrim((string) config('services.openai.base_url'), '/');
     }
 
     /**
@@ -34,47 +34,38 @@ class ClaudeService
     public function message(string $system, string $prompt, int $maxTokens = 1024): array
     {
         if ($this->apiKey === '') {
-            throw new RuntimeException('ANTHROPIC_API_KEY is not set. Add it to platform/.env.');
+            throw new RuntimeException('OPENAI_API_KEY is not set. Add it to platform/.env.');
         }
 
-        $response = Http::withHeaders([
-            'x-api-key' => $this->apiKey,
-            'anthropic-version' => '2023-06-01',
-            'content-type' => 'application/json',
-        ])
+        $response = Http::withToken($this->apiKey)
             ->timeout(170)
-            // `temperature` is deprecated/rejected by current Claude models —
-            // do not add it back.
-            ->post($this->baseUrl.'/v1/messages', [
+            ->post($this->baseUrl.'/v1/chat/completions', [
                 'model' => $this->model,
-                'max_tokens' => $maxTokens,
-                'system' => $system,
+                'max_completion_tokens' => $maxTokens,
                 'messages' => [
+                    ['role' => 'system', 'content' => $system],
                     ['role' => 'user', 'content' => $prompt],
                 ],
             ]);
 
         if ($response->failed()) {
-            throw new RuntimeException('Claude API error ('.$response->status().'): '.$response->body());
+            throw new RuntimeException('OpenAI API error ('.$response->status().'): '.$response->body());
         }
 
         $data = $response->json();
 
-        $text = collect($data['content'] ?? [])
-            ->where('type', 'text')
-            ->pluck('text')
-            ->implode('');
+        $text = $data['choices'][0]['message']['content'] ?? '';
 
         return [
             'text' => trim($text),
-            'input_tokens' => (int) ($data['usage']['input_tokens'] ?? 0),
-            'output_tokens' => (int) ($data['usage']['output_tokens'] ?? 0),
+            'input_tokens' => (int) ($data['usage']['prompt_tokens'] ?? 0),
+            'output_tokens' => (int) ($data['usage']['completion_tokens'] ?? 0),
             'model' => $data['model'] ?? $this->model,
         ];
     }
 
     /**
-     * Ask Claude for a set of distinct options, returned as an array of strings.
+     * Ask the model for a set of distinct options, returned as an array of strings.
      *
      * @return array{options: array<int, string>, input_tokens: int, output_tokens: int, model: string}
      */

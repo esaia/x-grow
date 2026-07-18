@@ -94,7 +94,7 @@ class GenerationController extends Controller
     }
 
     /**
-     * Shared: call Claude, persist the generation, and shape the JSON response.
+     * Shared: call OpenAI, persist the generation, and shape the JSON response.
      *
      * @param  array<string, mixed>  $meta
      */

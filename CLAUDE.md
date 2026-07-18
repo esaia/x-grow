@@ -4,15 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-X-Grow is an AI copilot for growing an X (Twitter) account. Two parts share one Anthropic (Claude) API key:
+X-Grow is an AI copilot for growing an X (Twitter) account. Two parts share one OpenAI API key:
 
 - **`platform/`** — Laravel 12 + Inertia + React (MySQL) app. It's both the API the extension calls *and* the dashboard (voice profile, weekly schedule, history, connect).
 - **`extension/`** — a Chrome extension (WXT + React + TypeScript) that injects **✨ AI** buttons into x.com to generate replies/posts in the user's voice and inserts them into X's own composer.
 
-The Anthropic key lives **only** in `platform/.env`, never in the extension. The extension authenticates to the platform's `/api` with a Sanctum personal access token generated on the dashboard's `/connect` page. The AI is assist-only for replies and freshly generated/regenerated drafts — it drafts, the user clicks Post (or, for the extension, inserts into X's own composer). The one exception: once the user explicitly moves a Weekly Schedule post from Draft to **Scheduled**, it auto-publishes to X via the connected X account when its time arrives (see "Auto-posting to X" below) — this only ever applies to schedule posts the user has explicitly approved, never to freshly generated drafts or extension replies.
+The OpenAI key lives **only** in `platform/.env`, never in the extension. The extension authenticates to the platform's `/api` with a Sanctum personal access token generated on the dashboard's `/connect` page. The AI is assist-only for replies and freshly generated/regenerated drafts — it drafts, the user clicks Post (or, for the extension, inserts into X's own composer). The one exception: once the user explicitly moves a Weekly Schedule post from Draft to **Scheduled**, it auto-publishes to X via the connected X account when its time arrives (see "Auto-posting to X" below) — this only ever applies to schedule posts the user has explicitly approved, never to freshly generated drafts or extension replies.
 
 ```
-Chrome extension  ──HTTPS──▶  Laravel platform (MySQL)  ──HTTPS──▶  Claude API
+Chrome extension  ──HTTPS──▶  Laravel platform (MySQL)  ──HTTPS──▶  OpenAI API
   reads x.com                   /api  +  dashboard                  (server-side
   ✨ buttons     ◀──JSON──       voice profile, tokens    ◀──JSON──   key only)
   inserts text                   usage, history
@@ -65,7 +65,7 @@ No test suite in the extension.
 
 ### Platform (Laravel + Inertia + React, "new-york" shadcn/ui, Tailwind v4)
 
-- **`app/Services/ClaudeService.php`** — thin wrapper around the Anthropic Messages API (`config('services.anthropic.*')`, env `ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL`/`ANTHROPIC_BASE_URL`). Has `message()` (single call) and `generateOptions()` (asks Claude for `{"options": [...]}` JSON, with fallback parsing if the model doesn't comply).
+- **`app/Services/ClaudeService.php`** — thin wrapper around the OpenAI Chat Completions API (`config('services.openai.*')`, env `OPENAI_API_KEY`/`OPENAI_MODEL`/`OPENAI_BASE_URL`). Has `message()` (single call) and `generateOptions()` (asks the model for `{"options": [...]}` JSON, with fallback parsing if it doesn't comply).
 - **`app/Services/PromptBuilder.php`** — the single source of truth for prompt construction. `systemPrompt()` builds the persona + voice from a `VoiceProfile`; `postPrompt()`/`replyPrompt()` build per-request instructions; `weeklyBatchPrompt(array $categories)` builds a numbered, per-slot-styled prompt for batch weekly generation (reused for both full-week generation and single-post regeneration by passing a one-element category array). `TONES`, `POST_FORMATS`, and `POST_CATEGORIES` are the canonical enums — shared with the frontend by hand (e.g. `voice.tsx`'s `TONE_META`, `schedule.tsx`'s `CATEGORY_COLORS` must be kept in sync manually when these change).
 - **API routes (`routes/api.php`)** — `auth:sanctum`, consumed only by the Chrome extension: `/me`, `/voice-profile`, `/voice/learn`, `/generate/{reply,post}`, `/generate/recent`. Controllers in `app/Http/Controllers/Api/`.
 - **Web routes (`routes/web.php`)** — `auth,verified`, the Inertia dashboard: `/dashboard`, `/voice`, `/history`, `/schedule` (+ `schedule/generate`, `schedule/posts/{post}` update/regenerate/destroy/schedule/unschedule, `schedule/schedule-all`), `/connect` (Sanctum token management + `connect/x/redirect`/`connect/x/callback`/`connect/x` for the X OAuth2 connection). Controllers in `app/Http/Controllers/`.
