@@ -79,6 +79,7 @@ const CATEGORY_COLORS: Record<string, string> = {
     tip: 'bg-emerald-500 text-white',
     promo: 'bg-pink-500 text-white',
     motivation: 'bg-orange-500 text-white',
+    news: 'bg-cyan-500 text-white',
 };
 
 const FALLBACK_CATEGORY_COLOR = 'bg-muted text-muted-foreground';

@@ -3,6 +3,7 @@
 use App\Http\Controllers\ConnectExtensionController;
 use App\Http\Controllers\ConnectXController;
 use App\Http\Controllers\HistoryController;
+use App\Http\Controllers\InspirationController;
 use App\Http\Controllers\ScheduleController;
 use App\Http\Controllers\VoiceController;
 use Illuminate\Support\Facades\Route;
@@ -31,6 +32,13 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('schedule/posts/{post}/unschedule', [ScheduleController::class, 'unschedule'])->name('schedule.unschedule');
     Route::post('schedule/schedule-all', [ScheduleController::class, 'scheduleAll'])->name('schedule.schedule-all');
     Route::post('schedule/empty-week', [ScheduleController::class, 'emptyWeek'])->name('schedule.empty-week');
+
+    // Inspiration — tracked creators and their viral posts.
+    Route::get('inspiration', [InspirationController::class, 'index'])->name('inspiration.index');
+    Route::post('inspiration/creators', [InspirationController::class, 'storeCreator'])->name('inspiration.creators.store');
+    Route::delete('inspiration/creators/{creator}', [InspirationController::class, 'destroyCreator'])->name('inspiration.creators.destroy');
+    Route::post('inspiration/scan', [InspirationController::class, 'scan'])->name('inspiration.scan');
+    Route::post('inspiration/posts/{post}/use', [InspirationController::class, 'useIdea'])->name('inspiration.use');
 
     // Connect the Chrome extension (Sanctum tokens).
     Route::get('connect', [ConnectExtensionController::class, 'show'])->name('connect.show');

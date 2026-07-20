@@ -21,7 +21,7 @@ class VoiceController extends Controller
         return Inertia::render('voice', [
             'profile' => $profile->only([
                 'tone', 'sample_posts', 'bio_context', 'facts',
-                'links', 'projects', 'topics', 'audience',
+                'links', 'projects', 'topics', 'news_context', 'audience',
                 'dos', 'donts',
             ]),
             'learned' => [

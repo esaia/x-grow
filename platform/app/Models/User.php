@@ -66,6 +66,11 @@ class User extends Authenticatable implements PasskeyUser
         return $this->hasMany(ScheduledPost::class);
     }
 
+    public function trackedCreators(): HasMany
+    {
+        return $this->hasMany(TrackedCreator::class);
+    }
+
     public function xAccount(): HasOne
     {
         return $this->hasOne(XAccount::class);

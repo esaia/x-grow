@@ -54,6 +54,7 @@ type VoiceProfile = {
     links: string | null;
     projects: string | null;
     topics: string | null;
+    news_context: string | null;
     audience: string | null;
     dos: string | null;
     donts: string | null;
@@ -82,6 +83,7 @@ export default function Voice({
         links: profile.links ?? '',
         projects: profile.projects ?? '',
         topics: profile.topics ?? '',
+        news_context: profile.news_context ?? '',
         audience: profile.audience ?? '',
         dos: profile.dos ?? '',
         donts: profile.donts ?? '',
@@ -281,6 +283,32 @@ export default function Voice({
                                 placeholder="building in public, indie hacking, AI tools, web dev, design"
                             />
                             <InputError message={form.errors.topics} />
+                        </CardContent>
+                    </Card>
+
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>News for “News” posts</CardTitle>
+                            <CardDescription>
+                                What kind of news you want your “News”
+                                scheduled posts to cover — the area, companies,
+                                or angle. Used only for the News category. The
+                                AI sticks to facts it’s confident are real and
+                                won’t invent breaking news.
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent className="grid grid-cols-1 gap-2">
+                            <Textarea
+                                id="news_context"
+                                value={form.data.news_context}
+                                onChange={(e) =>
+                                    form.setData('news_context', e.target.value)
+                                }
+                                placeholder={
+                                    'Tech news — companies like Figma, Claude/OpenAI, Vercel dropping updates.\n"Did you know that..." style facts about the tech world.\nBig launches and shifts in AI and web dev.'
+                                }
+                            />
+                            <InputError message={form.errors.news_context} />
                         </CardContent>
                     </Card>
 

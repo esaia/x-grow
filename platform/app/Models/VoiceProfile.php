@@ -18,6 +18,7 @@ class VoiceProfile extends Model
         'links',
         'projects',
         'topics',
+        'news_context',
         'audience',
         'x_handle',
         'voice_analysis',

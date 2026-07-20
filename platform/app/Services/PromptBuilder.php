@@ -24,6 +24,7 @@ class PromptBuilder
         'tip' => 'Tip / Value',
         'promo' => 'Share Your Work',
         'motivation' => 'Motivation',
+        'news' => 'News',
     ];
 
     /**
@@ -79,6 +80,12 @@ class PromptBuilder
             if (filled($profile->topics)) {
                 $lines[] = '';
                 $lines[] = "Main topics the owner posts about:\n".trim($profile->topics);
+            }
+
+            if (filled($profile->news_context)) {
+                $lines[] = '';
+                $lines[] = 'What kind of news the owner wants for their "News" posts (only relevant when writing a '
+                    ."News-style post):\n".trim($profile->news_context);
             }
 
             if (filled($profile->audience)) {
@@ -249,6 +256,15 @@ class PromptBuilder
                 'short lines that repeat the same opening word, closing with a blunt payoff line; (d) a blunt '.
                 'two-sentence truth contrasting two kinds of people or two choices. Plain everyday words, calm '.
                 'and confident, never hustle-bro energy, never generic "believe in yourself" filler.',
+            'news' => 'Write a short, sharp post reacting to or sharing something notable from the news area the '.
+                'owner specified in their profile (e.g. tech, a specific company like Figma or Claude/OpenAI shipping '.
+                'an update, a broader development in that world). Use one of these variants, mixing across posts: '.
+                '(a) a "Did you know that ..." interesting fact or tidbit; (b) a one-line take reacting to a notable '.
+                'development; (c) a "X just did Y, here is why it matters" mini-observation. CRITICAL: only reference '.
+                'facts, launches, or events you are actually confident are real and correct — never invent a product '.
+                'launch, feature, date, number, or announcement. If you are not sure a specific recent event '.
+                'happened, write about a well-established, evergreen fact in that area instead, or keep the take '.
+                'general. Better a true evergreen fact than a fabricated breaking-news claim.',
             default => 'Write a standalone post that fits the owner\'s usual topics.',
         };
     }
@@ -271,6 +287,53 @@ class PromptBuilder
             .'(b) A single blunt, specific one-line question with no list — the kind that makes someone stop '
             .'scrolling because it calls out something they actually think but don\'t say out loud. '
             .'No generic questions like "what do you think?" — always tied to a real, specific situation.';
+    }
+
+    /** How closely a remixed post should track the original (see inspirationPrompt). */
+    public const REMIX_CLOSENESS = [
+        'build' => 'Build on original',
+        'balanced' => 'Balanced',
+        'mine' => 'Make it mine',
+    ];
+
+    /**
+     * Prompt for the Inspiration "Remix this post" flow: take a viral post from
+     * a tracked creator and rewrite it in the owner's own voice, staying as
+     * close to (or far from) the original as $closeness asks.
+     *
+     * @param  string  $closeness  One of REMIX_CLOSENESS keys.
+     */
+    public function inspirationPrompt(string $originalPost, string $closeness = 'balanced', ?string $instructions = null): string
+    {
+        $parts = [
+            "Here is a post from another creator that performed unusually well:\n\"\"\"\n"
+                .trim($originalPost)."\n\"\"\"",
+            $this->remixClosenessGuidance($closeness),
+        ];
+
+        if (filled($instructions)) {
+            $parts[] = 'Additional instructions from the owner (follow these closely):'."\n".trim($instructions);
+        }
+
+        $parts[] = 'Write them in the owner\'s own voice, about the owner\'s own topics and experience. Do not '
+            .'mention the original creator or that this is a remix. Each post must be under 280 characters, able '
+            .'to stand on its own, and earn likes/replies/reposts.';
+
+        return implode("\n\n", $parts);
+    }
+
+    private function remixClosenessGuidance(string $closeness): string
+    {
+        return match ($closeness) {
+            'build' => 'Stay very close to the original: keep its exact structure, format, and rhythm, and reuse '
+                .'most of its phrasing. Only lightly adapt the wording so it reads naturally in the owner\'s voice. '
+                .'The result should be clearly recognizable as the same post, polished.',
+            'mine' => 'Keep ONLY the underlying idea or insight of the original. Rewrite it completely from scratch '
+                .'in the owner\'s own voice, structure, and examples. Do not reuse the original\'s wording, format, '
+                .'or specific details — make it feel like the owner\'s own original post.',
+            default => 'Keep the same overall shape and angle as the original (its hook, structure, and length), '
+                .'but rewrite it in the owner\'s own words and voice. Match the format, not the exact wording.',
+        };
     }
 
     /**

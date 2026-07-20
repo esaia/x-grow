@@ -28,6 +28,7 @@ class UpdateVoiceProfileRequest extends FormRequest
             'links' => ['nullable', 'string', 'max:2000'],
             'projects' => ['nullable', 'string', 'max:5000'],
             'topics' => ['nullable', 'string', 'max:2000'],
+            'news_context' => ['nullable', 'string', 'max:2000'],
             'audience' => ['nullable', 'string', 'max:2000'],
         ];
     }

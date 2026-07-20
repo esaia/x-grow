@@ -5,6 +5,7 @@ import {
     FolderGit2,
     History,
     LayoutGrid,
+    Lightbulb,
     Puzzle,
     Sparkles,
 } from 'lucide-react';
@@ -39,6 +40,11 @@ const mainNavItems: NavItem[] = [
         title: 'Weekly Schedule',
         href: '/schedule',
         icon: CalendarClock,
+    },
+    {
+        title: 'Inspiration',
+        href: '/inspiration',
+        icon: Lightbulb,
     },
     {
         title: 'History',
