@@ -365,15 +365,16 @@ class ScheduleController extends Controller
             ]);
         }
 
-        // Editing content/category/time on an already-approved post requires
+        // Editing content/category on an already-approved post requires
         // re-approval before it's eligible to auto-post again — an in-place
         // edit right before the scheduled time should never silently publish
-        // unreviewed content. Only revert if something actually changed —
-        // otherwise clicking Schedule and then Save with no edits would
-        // needlessly bounce the post straight back to Draft.
+        // unreviewed content. A pure time change doesn't alter the reviewed
+        // content, so it keeps the post scheduled (just moves when it posts).
+        // Only revert if something actually changed — otherwise clicking
+        // Schedule and then Save with no edits would needlessly bounce the
+        // post straight back to Draft.
         $contentChanged = $data['content'] !== $post->content
-            || $data['category'] !== $post->category
-            || ! $scheduledAt->equalTo($post->scheduled_at);
+            || $data['category'] !== $post->category;
 
         $revertedToDraft = $post->status === ScheduledPost::STATUS_SCHEDULED && $contentChanged;
 
