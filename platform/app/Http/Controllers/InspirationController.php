@@ -4,9 +4,11 @@ namespace App\Http\Controllers;
 
 use App\Models\Generation;
 use App\Models\InspirationPost;
+use App\Models\ScheduledPost;
 use App\Models\TrackedCreator;
 use App\Services\ClaudeService;
 use App\Services\PromptBuilder;
+use App\Services\XPostingService;
 use App\Services\XReaderService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -25,6 +27,7 @@ class InspirationController extends Controller
         private readonly ClaudeService $claude,
         private readonly PromptBuilder $prompts,
         private readonly XReaderService $reader,
+        private readonly XPostingService $poster,
     ) {}
 
     /**
@@ -242,5 +245,81 @@ class InspirationController extends Controller
             'options' => $result['options'],
             'source' => $post->content,
         ]);
+    }
+
+    /**
+     * Publish an edited remix straight to X now. Reuses XPostingService (token
+     * refresh + posting) by recording the tweet as a ScheduledPost; the row is
+     * removed again if publishing fails so it doesn't linger as a dead draft.
+     */
+    public function publish(Request $request): RedirectResponse
+    {
+        $data = $request->validate([
+            'content' => ['required', 'string', 'max:280'],
+            'timezone' => ['nullable', 'string', 'timezone'],
+        ]);
+
+        $user = $request->user();
+
+        if (! $user->xAccount) {
+            return back()->withErrors(['publish' => 'Connect your X account first to post.']);
+        }
+
+        $post = $user->scheduledPosts()->create([
+            'content' => $data['content'],
+            'status' => ScheduledPost::STATUS_DRAFT,
+            'scheduled_at' => now(),
+            'timezone' => $data['timezone'] ?? config('app.timezone'),
+        ]);
+
+        $this->poster->publish($post);
+        $post->refresh();
+
+        if ($post->status === ScheduledPost::STATUS_FAILED) {
+            $error = $post->error;
+            $post->delete();
+
+            return back()->withErrors(['publish' => $error ?? 'Could not post to X.']);
+        }
+
+        return back()->with('toast', 'Posted to X.');
+    }
+
+    /**
+     * Schedule an edited remix for a chosen time. Created already-approved
+     * (STATUS_SCHEDULED) since the user explicitly picked a slot, so it will
+     * auto-publish via PublishDuePosts when its time arrives.
+     */
+    public function schedule(Request $request): RedirectResponse
+    {
+        $data = $request->validate([
+            'content' => ['required', 'string', 'max:280'],
+            'date' => ['required', 'date'],
+            'time' => ['required', 'date_format:H:i'],
+            'timezone' => ['nullable', 'string', 'timezone'],
+        ]);
+
+        $user = $request->user();
+        $timezone = $data['timezone'] ?? config('app.timezone');
+        $scheduledAt = Carbon::parse($data['date'])->setTimeFromTimeString($data['time']);
+
+        // Compare against real "now" in the chosen timezone (scheduled_at is a
+        // naive wall-clock value — see CLAUDE.md).
+        if (Carbon::parse($data['date'].' '.$data['time'], $timezone)->isPast()) {
+            return back()->withErrors(['time' => 'That time is already in the past. Pick a later slot.']);
+        }
+
+        if ($user->scheduledPosts()->where('scheduled_at', $scheduledAt)->exists()) {
+            return back()->withErrors(['time' => 'Another post is already scheduled at that time. Pick a different slot.']);
+        }
+
+        $user->scheduledPosts()->create([
+            'content' => $data['content'],
+            'status' => ScheduledPost::STATUS_SCHEDULED,
+            'scheduled_at' => $scheduledAt,
+            'timezone' => $timezone,
+        ]);
+
+        return back()->with('toast', 'Scheduled — it will publish automatically at its time.');
     }
 }

@@ -39,6 +39,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::delete('inspiration/creators/{creator}', [InspirationController::class, 'destroyCreator'])->name('inspiration.creators.destroy');
     Route::post('inspiration/scan', [InspirationController::class, 'scan'])->name('inspiration.scan');
     Route::post('inspiration/posts/{post}/use', [InspirationController::class, 'useIdea'])->name('inspiration.use');
+    Route::post('inspiration/publish', [InspirationController::class, 'publish'])->name('inspiration.publish');
+    Route::post('inspiration/schedule', [InspirationController::class, 'schedule'])->name('inspiration.schedule');
 
     // Connect the Chrome extension (Sanctum tokens).
     Route::get('connect', [ConnectExtensionController::class, 'show'])->name('connect.show');

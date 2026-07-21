@@ -1,11 +1,13 @@
 import { Head, Link, router } from '@inertiajs/react';
 import {
+    CalendarClock,
     Heart,
     MessageCircle,
     Pencil,
     Plus,
     RefreshCw,
     Repeat2,
+    Send,
     Sparkles,
     Trash2,
 } from 'lucide-react';
@@ -150,6 +152,53 @@ const relativeTime = (iso: string | null, now: number): string => {
     return months < 12 ? `${months}mo ago` : `${Math.floor(months / 12)}y ago`;
 };
 
+const MAX_TWEET = 280;
+
+const browserTimezone = (): string =>
+    Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// Local YYYY-MM-DD for a Date (not toISOString, which shifts to UTC).
+const toDateKey = (d: Date): string =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+const toClock = (d: Date): string =>
+    `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+type Slot = { ms: number; time: string; sub: string };
+
+// A few suggested posting times for the rest of today: rounded up to the next
+// half hour (with a little lead time), then spaced ~2.5h apart until late.
+const buildTodaySlots = (nowMs: number): Slot[] => {
+    const earliest = new Date(nowMs + 20 * 60_000);
+
+    earliest.setSeconds(0, 0);
+    earliest.setMinutes(earliest.getMinutes() <= 30 ? 30 : 60);
+
+    const endOfDay = new Date(nowMs);
+
+    endOfDay.setHours(23, 30, 0, 0);
+
+    const slots: Slot[] = [];
+
+    for (let i = 0; i < 4; i++) {
+        const at = new Date(earliest.getTime() + i * 150 * 60_000);
+
+        if (at.getTime() > endOfDay.getTime()) {
+            break;
+        }
+
+        const hours = Math.round((at.getTime() - nowMs) / 3_600_000);
+
+        slots.push({
+            ms: at.getTime(),
+            time: toClock(at),
+            sub: hours <= 0 ? 'soon' : `in ${hours}h`,
+        });
+    }
+
+    return slots;
+};
+
 export default function Inspiration({
     creators,
     posts,
@@ -172,6 +221,14 @@ export default function Inspiration({
     const [instructions, setInstructions] = useState('');
     const [generating, setGenerating] = useState(false);
     const [remixOptions, setRemixOptions] = useState<string[] | null>(null);
+    const [editorText, setEditorText] = useState('');
+    const [editorOpen, setEditorOpen] = useState(false);
+    const [posting, setPosting] = useState(false);
+    const [scheduleOpen, setScheduleOpen] = useState(false);
+    const [scheduling, setScheduling] = useState(false);
+    const [selectedSlot, setSelectedSlot] = useState<string>('custom');
+    const [customDate, setCustomDate] = useState('');
+    const [customTime, setCustomTime] = useState('');
 
     useEffect(() => {
         const update = () => setNow(Date.now());
@@ -268,9 +325,84 @@ export default function Inspiration({
         );
     };
 
-    const copyDraft = (text: string) => {
-        void navigator.clipboard.writeText(text);
-        toast.success('Copied to clipboard.');
+    const openEditor = (text: string) => {
+        setEditorText(text);
+        setEditorOpen(true);
+    };
+
+    const postNow = () => {
+        if (!editorText.trim()) {
+            return;
+        }
+
+        setPosting(true);
+        router.post(
+            '/inspiration/publish',
+            { content: editorText, timezone: browserTimezone() },
+            {
+                preserveScroll: true,
+                onSuccess: () => {
+                    setEditorOpen(false);
+                    setRemixPost(null);
+                },
+                onError: (errors) =>
+                    toast.error(errors.publish ?? 'Could not post to X.'),
+                onFinish: () => setPosting(false),
+            },
+        );
+    };
+
+    const todaySlots = now === null ? [] : buildTodaySlots(now);
+
+    const openScheduler = () => {
+        if (!editorText.trim()) {
+            return;
+        }
+
+        const slots = now === null ? [] : buildTodaySlots(now);
+
+        setSelectedSlot(slots.length > 0 ? String(slots[0].ms) : 'custom');
+        setCustomDate(now === null ? '' : toDateKey(new Date(now)));
+        setCustomTime('');
+        setScheduleOpen(true);
+    };
+
+    const confirmSchedule = () => {
+        let date: string;
+        let time: string;
+
+        if (selectedSlot === 'custom') {
+            if (!customDate || !customTime) {
+                toast.error('Pick a date and time.');
+
+                return;
+            }
+
+            date = customDate;
+            time = customTime;
+        } else {
+            const at = new Date(Number(selectedSlot));
+
+            date = toDateKey(at);
+            time = toClock(at);
+        }
+
+        setScheduling(true);
+        router.post(
+            '/inspiration/schedule',
+            { content: editorText, date, time, timezone: browserTimezone() },
+            {
+                preserveScroll: true,
+                onSuccess: () => {
+                    setScheduleOpen(false);
+                    setEditorOpen(false);
+                    setRemixPost(null);
+                },
+                onError: (errors) =>
+                    toast.error(errors.time ?? 'Could not schedule this post.'),
+                onFinish: () => setScheduling(false),
+            },
+        );
     };
 
     return (
@@ -332,7 +464,20 @@ export default function Inspiration({
                                     key={creator.id}
                                     value={String(creator.id)}
                                 >
-                                    @{creator.username}
+                                    <span className="flex items-center gap-2">
+                                        <Avatar className="size-5">
+                                            {creator.avatar_url && (
+                                                <AvatarImage
+                                                    src={creator.avatar_url}
+                                                    alt={creator.username}
+                                                />
+                                            )}
+                                            <AvatarFallback className="text-[9px]">
+                                                {initials(creator)}
+                                            </AvatarFallback>
+                                        </Avatar>
+                                        @{creator.username}
+                                    </span>
                                 </SelectItem>
                             ))}
                         </SelectContent>
@@ -585,10 +730,23 @@ export default function Inspiration({
                                     Original
                                 </p>
                                 <div className="rounded-md border bg-muted/40 p-3">
-                                    <p className="text-sm font-medium">
-                                        @{remixPost.username}
-                                    </p>
-                                    <p className="mt-1 text-sm whitespace-pre-wrap">
+                                    <div className="flex items-center gap-2">
+                                        <Avatar className="size-7">
+                                            {remixPost.avatar_url && (
+                                                <AvatarImage
+                                                    src={remixPost.avatar_url}
+                                                    alt={remixPost.username}
+                                                />
+                                            )}
+                                            <AvatarFallback>
+                                                {initials(remixPost)}
+                                            </AvatarFallback>
+                                        </Avatar>
+                                        <span className="text-sm font-medium">
+                                            @{remixPost.username}
+                                        </span>
+                                    </div>
+                                    <p className="mt-2 text-sm whitespace-pre-wrap">
                                         {remixPost.content}
                                     </p>
                                 </div>
@@ -663,10 +821,10 @@ export default function Inspiration({
                                                         size="sm"
                                                         variant="outline"
                                                         onClick={() =>
-                                                            copyDraft(option)
+                                                            openEditor(option)
                                                         }
                                                     >
-                                                        Copy
+                                                        Edit & post
                                                     </Button>
                                                 </div>
                                             </div>
@@ -690,6 +848,179 @@ export default function Inspiration({
                             </div>
                         </div>
                     )}
+                </DialogContent>
+            </Dialog>
+
+            {/* Edit & publish a chosen remix */}
+            <Dialog
+                open={editorOpen}
+                onOpenChange={(open) => !open && setEditorOpen(false)}
+            >
+                <DialogContent className="sm:max-w-lg">
+                    <div className="flex flex-col gap-4">
+                        <div>
+                            <h2 className="text-xl font-bold">
+                                Edit & publish
+                            </h2>
+                            <p className="text-sm text-muted-foreground">
+                                Tweak the wording, then post now or schedule it.
+                            </p>
+                        </div>
+
+                        <div className="flex flex-col gap-1.5">
+                            <Textarea
+                                value={editorText}
+                                onChange={(e) => setEditorText(e.target.value)}
+                                rows={5}
+                                maxLength={MAX_TWEET}
+                            />
+                            <p
+                                className={cn(
+                                    'text-right text-xs',
+                                    editorText.length > MAX_TWEET
+                                        ? 'text-destructive'
+                                        : 'text-muted-foreground',
+                                )}
+                            >
+                                {editorText.length}/{MAX_TWEET}
+                            </p>
+                        </div>
+
+                        {!hasXAccount && (
+                            <p className="text-xs text-muted-foreground">
+                                Connect your X account to post. You can still
+                                schedule.
+                            </p>
+                        )}
+
+                        <div className="flex justify-end gap-2">
+                            <Button
+                                variant="outline"
+                                onClick={openScheduler}
+                                disabled={!editorText.trim()}
+                            >
+                                <CalendarClock className="size-4" />
+                                Schedule
+                            </Button>
+                            <Button
+                                onClick={postNow}
+                                disabled={
+                                    posting ||
+                                    !hasXAccount ||
+                                    !editorText.trim()
+                                }
+                            >
+                                {posting ? (
+                                    <Spinner className="size-4" />
+                                ) : (
+                                    <Send className="size-4" />
+                                )}
+                                Post
+                            </Button>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* Schedule for a slot today */}
+            <Dialog
+                open={scheduleOpen}
+                onOpenChange={(open) => !open && setScheduleOpen(false)}
+            >
+                <DialogContent className="sm:max-w-md">
+                    <div className="flex flex-col gap-4">
+                        <div className="flex flex-col items-center gap-1 text-center">
+                            <CalendarClock className="size-6 text-muted-foreground" />
+                            <h2 className="text-xl font-bold">
+                                Schedule for today
+                            </h2>
+                            <p className="text-sm text-muted-foreground">
+                                Pick a slot, or choose a custom time.
+                            </p>
+                        </div>
+
+                        <div className="flex flex-col gap-2">
+                            {todaySlots.map((slot) => (
+                                <button
+                                    key={slot.ms}
+                                    type="button"
+                                    onClick={() =>
+                                        setSelectedSlot(String(slot.ms))
+                                    }
+                                    className={cn(
+                                        'flex items-center justify-between rounded-md border p-3 text-left transition-colors',
+                                        selectedSlot === String(slot.ms)
+                                            ? 'border-primary bg-primary/5'
+                                            : 'hover:bg-muted/50',
+                                    )}
+                                >
+                                    <span className="font-mono text-sm font-semibold">
+                                        {slot.time}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground">
+                                        {slot.sub}
+                                    </span>
+                                </button>
+                            ))}
+
+                            <button
+                                type="button"
+                                onClick={() => setSelectedSlot('custom')}
+                                className={cn(
+                                    'flex flex-col gap-1 rounded-md border p-3 text-left transition-colors',
+                                    selectedSlot === 'custom'
+                                        ? 'border-primary bg-primary/5'
+                                        : 'hover:bg-muted/50',
+                                )}
+                            >
+                                <span className="text-sm font-semibold">
+                                    Custom time
+                                </span>
+                                <span className="text-xs text-muted-foreground">
+                                    Pick any date and time.
+                                </span>
+                            </button>
+
+                            {selectedSlot === 'custom' && (
+                                <div className="flex gap-2">
+                                    <Input
+                                        type="date"
+                                        value={customDate}
+                                        onChange={(e) =>
+                                            setCustomDate(e.target.value)
+                                        }
+                                    />
+                                    <Input
+                                        type="time"
+                                        value={customTime}
+                                        onChange={(e) =>
+                                            setCustomTime(e.target.value)
+                                        }
+                                    />
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="flex flex-col gap-2">
+                            <Button
+                                onClick={confirmSchedule}
+                                disabled={scheduling}
+                            >
+                                {scheduling ? (
+                                    <Spinner className="size-4" />
+                                ) : (
+                                    <CalendarClock className="size-4" />
+                                )}
+                                Schedule
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                onClick={() => setScheduleOpen(false)}
+                            >
+                                Cancel
+                            </Button>
+                        </div>
+                    </div>
                 </DialogContent>
             </Dialog>
         </div>

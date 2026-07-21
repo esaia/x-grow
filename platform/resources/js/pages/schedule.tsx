@@ -84,6 +84,11 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 const FALLBACK_CATEGORY_COLOR = 'bg-muted text-muted-foreground';
 
+// Posts with no category (e.g. created straight from the Inspiration tab) get
+// their own vivid card color — indigo, deliberately NOT one of the reserved
+// legend hues above (red/blue/violet/emerald/pink/orange/cyan).
+const UNCATEGORIZED_COLOR = 'bg-indigo-500 text-white';
+
 // Calendar grid geometry: 24 hourly rows, each ROW_HEIGHT px tall.
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 const ROW_HEIGHT = 56;
@@ -253,7 +258,7 @@ function CalendarChip({
 }) {
     const color = post.category
         ? (CATEGORY_COLORS[post.category] ?? FALLBACK_CATEGORY_COLOR)
-        : FALLBACK_CATEGORY_COLOR;
+        : UNCATEGORIZED_COLOR;
     const categoryLabel =
         categories.find((c) => c.slug === post.category)?.label ??
         post.category ??
@@ -428,7 +433,10 @@ export default function Schedule({
     // Clicking an empty spot on the calendar opens this modal, pre-filled
     // with the day/time that was clicked, to either write a post by hand or
     // generate one on the spot.
-    const [addSlot, setAddSlot] = useState<{ date: string; time: string } | null>(null);
+    const [addSlot, setAddSlot] = useState<{
+        date: string;
+        time: string;
+    } | null>(null);
     const [addContent, setAddContent] = useState('');
     const [addCategory, setAddCategory] = useState('');
     const [addSaving, setAddSaving] = useState(false);
@@ -506,7 +514,8 @@ export default function Schedule({
         window.localStorage.setItem(
             RANGE_STORAGE_KEY,
             JSON.stringify({
-                range_start: key === 'range_start' ? value : form.data.range_start,
+                range_start:
+                    key === 'range_start' ? value : form.data.range_start,
                 range_end: key === 'range_end' ? value : form.data.range_end,
             }),
         );
@@ -577,7 +586,10 @@ export default function Schedule({
 
     // Opens the "Add post" modal for the day column that was clicked, at the
     // hour implied by the click's vertical position, snapped to 15 minutes.
-    const openAddSlot = (dayIndex: number, e: React.MouseEvent<HTMLDivElement>) => {
+    const openAddSlot = (
+        dayIndex: number,
+        e: React.MouseEvent<HTMLDivElement>,
+    ) => {
         const rect = e.currentTarget.getBoundingClientRect();
         const offsetY = e.clientY - rect.top;
         const totalMinutes = (offsetY / ROW_HEIGHT) * 60;
@@ -1171,7 +1183,7 @@ export default function Schedule({
                                                           editingPost.category
                                                       ] ??
                                                           FALLBACK_CATEGORY_COLOR)
-                                                    : FALLBACK_CATEGORY_COLOR,
+                                                    : UNCATEGORIZED_COLOR,
                                             )}
                                         >
                                             {categories.find(
@@ -1514,8 +1526,8 @@ export default function Schedule({
                         <AlertDialogTitle>Empty this week?</AlertDialogTitle>
                         <AlertDialogDescription>
                             Every post this week — including scheduled and
-                            already-posted ones — will be permanently
-                            removed. This can't be undone.
+                            already-posted ones — will be permanently removed.
+                            This can't be undone.
                         </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>

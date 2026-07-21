@@ -172,4 +172,91 @@ class InspirationTest extends TestCase
             ->post(route('inspiration.use', $post), ['closeness' => 'bogus'])
             ->assertSessionHasErrors('closeness');
     }
+
+    public function test_publish_posts_to_x_now(): void
+    {
+        $user = User::factory()->create();
+        $this->connectX($user);
+
+        Http::fake([
+            'api.x.com/2/tweets' => Http::response(['data' => ['id' => '12345']]),
+        ]);
+
+        $this->actingAs($user)
+            ->post(route('inspiration.publish'), ['content' => 'A brand new post.'])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('scheduled_posts', [
+            'user_id' => $user->id,
+            'content' => 'A brand new post.',
+            'status' => 'posted',
+            'x_tweet_id' => '12345',
+        ]);
+    }
+
+    public function test_publish_requires_a_connected_x_account(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->post(route('inspiration.publish'), ['content' => 'A brand new post.'])
+            ->assertSessionHasErrors('publish');
+
+        $this->assertDatabaseCount('scheduled_posts', 0);
+    }
+
+    public function test_failed_publish_removes_the_row_and_reports_error(): void
+    {
+        $user = User::factory()->create();
+        $this->connectX($user);
+
+        Http::fake([
+            'api.x.com/2/tweets' => Http::response('rate limited', 429),
+        ]);
+
+        $this->actingAs($user)
+            ->post(route('inspiration.publish'), ['content' => 'A brand new post.'])
+            ->assertSessionHasErrors('publish');
+
+        $this->assertDatabaseCount('scheduled_posts', 0);
+    }
+
+    public function test_schedule_creates_an_approved_post(): void
+    {
+        $user = User::factory()->create();
+        $date = now()->addDay()->toDateString();
+
+        $this->actingAs($user)
+            ->post(route('inspiration.schedule'), [
+                'content' => 'Later post.',
+                'date' => $date,
+                'time' => '10:30',
+                'timezone' => 'UTC',
+            ])
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('scheduled_posts', [
+            'user_id' => $user->id,
+            'content' => 'Later post.',
+            'status' => 'scheduled',
+        ]);
+    }
+
+    public function test_schedule_rejects_a_past_time(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->post(route('inspiration.schedule'), [
+                'content' => 'Too late.',
+                'date' => now()->subDay()->toDateString(),
+                'time' => '10:30',
+                'timezone' => 'UTC',
+            ])
+            ->assertSessionHasErrors('time');
+
+        $this->assertDatabaseCount('scheduled_posts', 0);
+    }
 }
