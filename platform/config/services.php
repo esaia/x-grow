@@ -49,4 +49,30 @@ return [
         'redirect_uri' => env('X_REDIRECT_URI'),
     ],
 
+    // LinkedIn OAuth2 — used by ConnectLinkedInController and
+    // LinkedInPostingService to publish scheduled posts on the user's behalf.
+    // `version` is the LinkedIn-Version header the versioned REST API requires.
+    'linkedin' => [
+        'client_id' => env('LINKEDIN_CLIENT_ID'),
+        'client_secret' => env('LINKEDIN_CLIENT_SECRET'),
+        'redirect_uri' => env('LINKEDIN_REDIRECT_URI'),
+        'version' => env('LINKEDIN_API_VERSION', '202506'),
+
+        // Posting as a company page requires LinkedIn's Community Management
+        // API product, which LinkedIn refuses to provision on an app that
+        // holds any other product ("requires that it be the only product on
+        // the application"). So pages need a SECOND LinkedIn app, with its
+        // own credentials — configure them here to enable the pages flow
+        // (see ConnectLinkedInPagesController). Leave the client id empty to
+        // turn page support off entirely.
+        'pages' => [
+            'client_id' => env('LINKEDIN_PAGES_CLIENT_ID'),
+            'client_secret' => env('LINKEDIN_PAGES_CLIENT_SECRET'),
+            'redirect_uri' => env('LINKEDIN_PAGES_REDIRECT_URI'),
+            // Must match what the pages app's Auth tab actually lists —
+            // requesting an ungranted scope fails with invalid_scope_error.
+            'scopes' => env('LINKEDIN_PAGES_SCOPES', 'w_organization_social rw_organization_admin'),
+        ],
+    ],
+
 ];

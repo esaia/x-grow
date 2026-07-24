@@ -3,13 +3,13 @@
 namespace App\Services;
 
 use App\Models\ScheduledPost;
-use App\Models\XAccount;
+use App\Models\SocialAccount;
 use Illuminate\Support\Facades\Http;
 
 /**
  * Publishes an approved ScheduledPost to X on the user's behalf via the
- * X API v2, refreshing the user's OAuth2 token first if needed. Called by
- * App\Console\Commands\PublishDuePosts, never synchronously from a request.
+ * X API v2, refreshing the account's OAuth2 token first if needed. Reached
+ * through App\Services\SocialPublisher, never synchronously from a request.
  */
 class XPostingService
 {
@@ -18,8 +18,8 @@ class XPostingService
     private const TWEETS_URL = 'https://api.x.com/2/tweets';
 
     /**
-     * Publish the post's content to X as a single tweet. Weekly-schedule
-     * content (the only source of ScheduledPost::content — see
+     * Publish the post's content to X as a single tweet, from the account
+     * the post targets. Weekly-schedule content (see
      * PromptBuilder::weeklyBatchPrompt) is always one tweet under 280
      * characters, even when it uses blank lines internally for visual
      * pacing (e.g. the "Question / Poll" format) — that's never a signal
@@ -28,26 +28,28 @@ class XPostingService
      */
     public function publish(ScheduledPost $post): void
     {
-        $account = $post->user->xAccount;
+        $account = $post->socialAccount;
 
         if (! $account) {
-            $post->update(['status' => ScheduledPost::STATUS_FAILED, 'error' => 'No connected X account.']);
+            $post->update([
+                'status' => ScheduledPost::STATUS_FAILED,
+                'error' => 'The X account this post targets is no longer connected.',
+            ]);
 
             return;
         }
 
-        if ($account->isExpired()) {
-            if (! $this->refresh($account)) {
-                $post->update([
-                    'status' => ScheduledPost::STATUS_FAILED,
-                    'error' => 'X token expired and could not be refreshed. Reconnect your X account.',
-                ]);
+        if ($account->isExpired() && ! $this->refresh($account)) {
+            $post->update([
+                'status' => ScheduledPost::STATUS_FAILED,
+                'error' => 'X token expired and could not be refreshed. Reconnect '.$account->label().'.',
+            ]);
 
-                return;
-            }
+            return;
         }
 
-        $response = Http::withToken($account->access_token)->post(self::TWEETS_URL, ['text' => $post->content]);
+        $response = Http::withToken($account->access_token)
+            ->post(self::TWEETS_URL, ['text' => $post->content]);
 
         if ($response->failed()) {
             $post->update([
@@ -61,7 +63,7 @@ class XPostingService
         $post->update([
             'status' => ScheduledPost::STATUS_POSTED,
             'posted_at' => now(),
-            'x_tweet_id' => $response->json('data.id'),
+            'external_post_id' => $response->json('data.id'),
             'error' => null,
         ]);
     }
@@ -70,7 +72,7 @@ class XPostingService
      * Refresh an expired access token. X rotates the refresh token on every
      * use, so the new one must be persisted or the next refresh will fail.
      */
-    private function refresh(XAccount $account): bool
+    private function refresh(SocialAccount $account): bool
     {
         if (! $account->refresh_token) {
             return false;

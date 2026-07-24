@@ -57,6 +57,28 @@ function field(label: string, control: Node): HTMLElement {
   return h('div', { class: 'xg-field' }, microLabel(label), control);
 }
 
+// The conversation the reply lands in: the original post (and any intermediate
+// tweets) followed by the immediate comment. Showing the whole thread — not
+// only the comment — makes clear the AI has the post as context too.
+function replyContext(ctx: ComposerContext): HTMLElement {
+  const tweets = ctx.contextTweets.length ? ctx.contextTweets : [ctx.tweet];
+  const wrap = h('div', { class: 'xg-context' });
+  tweets.forEach((text, i) => {
+    const last = i === tweets.length - 1;
+    if (tweets.length > 1) {
+      wrap.append(h('div', {
+        class: 'xg-context-role',
+        textContent: last ? 'Comment' : i === 0 ? 'Original post' : 'Earlier reply',
+      }));
+    }
+    wrap.append(h('div', {
+      class: 'xg-quote' + (last ? '' : ' is-parent'),
+      textContent: text,
+    }));
+  });
+  return wrap;
+}
+
 // A row of single-select pill chips. Returns the element + a current-value getter.
 function chipGroup(
   values: readonly string[],
@@ -166,10 +188,19 @@ const STYLE = `
   color: var(--muted); margin-bottom: 9px;
 }
 
+.xg-context { display: flex; flex-direction: column; gap: 8px; }
+.xg-context-role {
+  font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: -4px;
+}
 .xg-quote {
   font-size: 13px; line-height: 1.5; color: #C9C3D2;
   border-left: 2px solid var(--amber); padding: 1px 0 1px 12px;
   max-height: 66px; overflow: hidden;
+}
+.xg-quote.is-parent {
+  color: var(--muted); border-left-color: var(--line);
+  max-height: 48px;
 }
 
 .xg-input {
@@ -398,7 +429,7 @@ async function renderInputs(
   const controls: HTMLElement[] = [];
 
   if (isReply) {
-    controls.push(field('Replying to', h('div', { class: 'xg-quote', textContent: ctx.tweet })));
+    controls.push(field('Replying to', replyContext(ctx)));
     controls.push(field('Tone', toneGroup.el));
   } else {
     topic = h('textarea', {

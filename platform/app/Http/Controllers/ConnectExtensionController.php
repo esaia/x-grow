@@ -24,14 +24,30 @@ class ConnectExtensionController extends Controller
                 'created_at' => $token->created_at?->toDayDateTimeString(),
             ]);
 
-        $xAccount = $request->user()->xAccount;
+        $accounts = $request->user()->socialAccounts()
+            ->orderBy('provider')
+            ->orderBy('kind')
+            ->orderBy('id')
+            ->get()
+            ->map(fn ($account) => [
+                'id' => $account->id,
+                'provider' => $account->provider,
+                'kind' => $account->kind,
+                'label' => $account->label(),
+                'is_active' => $account->is_active,
+                'expires_at' => $account->expires_at?->toDayDateTimeString(),
+            ]);
 
         return Inertia::render('connect', [
             'tokens' => $tokens,
             'apiBaseUrl' => rtrim(config('app.url'), '/').'/api',
             // Shown only once, right after creation.
             'newToken' => $request->session()->get('extension_token'),
-            'xAccount' => $xAccount ? ['username' => $xAccount->username] : null,
+            'accounts' => $accounts,
+            // Whether a second LinkedIn app is configured for company pages
+            // (see ConnectLinkedInPagesController) — without it the UI can't
+            // offer page connecting at all.
+            'linkedinPagesEnabled' => (bool) config('services.linkedin.pages.client_id'),
         ]);
     }
 

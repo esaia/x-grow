@@ -45,15 +45,55 @@ type ScheduledPost = {
     id: number;
     content: string;
     category: string | null;
+    platform: string;
+    // Null once the target account has been disconnected — the post survives
+    // as an unpublishable draft until it's pointed at another account.
+    social_account_id: number | null;
     status: string;
     error: string | null;
     scheduled_at: string;
+};
+
+// A connected posting destination: an X account, a LinkedIn member, or a
+// LinkedIn company page (kind = organization).
+type SocialAccount = {
+    id: number;
+    provider: string;
+    kind: string;
+    label: string;
+    // Paused accounts stay listed so a post already aimed at one still shows
+    // its target, but they can't be picked and never auto-publish.
+    is_active: boolean;
 };
 
 type Category = {
     slug: string;
     label: string;
 };
+
+// Per-platform display + composing rules, keyed by the backend's
+// ScheduledPost::PLATFORMS slugs (kept in sync by hand, like STATUS_COLORS
+// and CATEGORY_COLORS below).
+const PLATFORM_META: Record<
+    string,
+    { short: string; color: string; limit: number }
+> = {
+    x: { short: 'X', color: 'bg-neutral-900 text-white', limit: 280 },
+    linkedin: { short: 'in', color: 'bg-sky-700 text-white', limit: 3000 },
+};
+
+const FALLBACK_PLATFORM_LIMIT = 280;
+
+// The strictest limit across the selected accounts — what the composer's
+// character counter has to hold the content to.
+function contentLimit(accounts: SocialAccount[]): number {
+    const limits = accounts.map(
+        (account) =>
+            PLATFORM_META[account.provider]?.limit ?? FALLBACK_PLATFORM_LIMIT,
+    );
+
+    return limits.length > 0 ? Math.min(...limits) : FALLBACK_PLATFORM_LIMIT;
+}
 
 // Colors for the status pill — used both on the compact calendar chip and
 // the edit modal — mirrors CATEGORY_COLORS below, kept in sync by hand with
@@ -244,16 +284,93 @@ function PatternOption({
     );
 }
 
+// A single selectable target account inside the add/edit modals. Used both
+// as a multi-select (Add post — one row is created per selected account) and
+// a single-select (Edit — a row targets exactly one account).
+function AccountOption({
+    account,
+    selected,
+    onSelect,
+}: {
+    account: SocialAccount;
+    selected: boolean;
+    onSelect: () => void;
+}) {
+    const meta = PLATFORM_META[account.provider];
+
+    return (
+        <button
+            type="button"
+            onClick={onSelect}
+            disabled={!account.is_active}
+            title={
+                account.is_active
+                    ? undefined
+                    : `${account.label} is paused — resume it on the Connect page`
+            }
+            className={cn(
+                'flex cursor-pointer items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold whitespace-nowrap transition-colors',
+                selected
+                    ? cn(
+                          meta?.color ?? 'bg-primary text-primary-foreground',
+                          'border-transparent',
+                      )
+                    : 'border-border bg-transparent text-muted-foreground hover:bg-muted',
+                !account.is_active &&
+                    'cursor-not-allowed opacity-40 hover:bg-transparent',
+            )}
+        >
+            <span
+                className={cn(
+                    'rounded-sm px-1 py-px text-[9px] font-bold',
+                    selected
+                        ? 'bg-white/20'
+                        : (meta?.color ?? 'bg-muted text-muted-foreground'),
+                )}
+            >
+                {meta?.short ?? account.provider}
+            </span>
+            {account.label}
+            {account.kind === 'organization' && (
+                <span className="text-[10px] font-normal opacity-70">page</span>
+            )}
+            {!account.is_active && (
+                <span className="text-[10px] font-normal opacity-70">
+                    paused
+                </span>
+            )}
+        </button>
+    );
+}
+
+// The compact platform marker shown on a calendar chip.
+function PlatformBadge({ platform }: { platform: string }) {
+    const meta = PLATFORM_META[platform];
+
+    return (
+        <span
+            className={cn(
+                'shrink-0 rounded-sm px-1 py-px text-[9px] font-bold whitespace-nowrap',
+                meta?.color ?? 'bg-muted text-muted-foreground',
+            )}
+        >
+            {meta?.short ?? platform}
+        </span>
+    );
+}
+
 // A single scheduled post rendered at its real time slot on the calendar.
 function CalendarChip({
     post,
     categories,
     statuses,
+    platforms,
     onOpen,
 }: {
     post: ScheduledPost;
     categories: Category[];
     statuses: Record<string, string>;
+    platforms: Record<string, string>;
     onOpen: () => void;
 }) {
     const color = post.category
@@ -294,6 +411,7 @@ function CalendarChip({
                         <span className="min-w-0 flex-1 truncate text-[10px] font-semibold opacity-90">
                             {formatTime(post.scheduled_at)}
                         </span>
+                        <PlatformBadge platform={post.platform} />
                         <span
                             className={cn(
                                 'shrink-0 rounded-full px-1.5 py-px text-[9px] font-bold tracking-wide whitespace-nowrap uppercase',
@@ -315,6 +433,7 @@ function CalendarChip({
             >
                 <p className="mb-1 font-semibold">
                     {formatTime(post.scheduled_at)}
+                    {` · ${platforms[post.platform] ?? post.platform}`}
                     {categoryLabel ? ` · ${categoryLabel}` : ''}
                     {` · ${statusLabel}`}
                 </p>
@@ -332,18 +451,29 @@ export default function Schedule({
     posts,
     categories,
     statuses,
+    platforms,
+    accounts,
 }: {
     weekStart: string;
     posts: ScheduledPost[];
     categories: Category[];
     statuses: Record<string, string>;
+    platforms: Record<string, string>;
+    accounts: SocialAccount[];
 }) {
+    // Paused accounts can't be targeted, so every default selection and the
+    // week-generation picker work off this list rather than `accounts`.
+    const activeAccounts = accounts.filter((account) => account.is_active);
+
     const form = useForm({
         week_start: weekStart,
         range_start: '10:00',
         range_end: '22:00',
         per_day: 3,
         categories: categories.map((c) => c.slug),
+        // A generated week is written for one account; the others are filled
+        // per-slot from the Add-post modal.
+        account_id: activeAccounts[0]?.id ?? null,
     });
 
     // Which legend categories are toggled on/off persists across page
@@ -419,6 +549,7 @@ export default function Schedule({
     const [editingPost, setEditingPost] = useState<ScheduledPost | null>(null);
     const [draftContent, setDraftContent] = useState('');
     const [draftCategory, setDraftCategory] = useState('');
+    const [draftAccountId, setDraftAccountId] = useState<number | null>(null);
     const [draftTime, setDraftTime] = useState('');
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
@@ -439,6 +570,10 @@ export default function Schedule({
     } | null>(null);
     const [addContent, setAddContent] = useState('');
     const [addCategory, setAddCategory] = useState('');
+    // Multi-select: one post row is created per selected account.
+    const [addAccountIds, setAddAccountIds] = useState<number[]>(
+        activeAccounts[0] ? [activeAccounts[0].id] : [],
+    );
     const [addSaving, setAddSaving] = useState(false);
     const [addGenerating, setAddGenerating] = useState(false);
     const [addError, setAddError] = useState<string | null>(null);
@@ -577,6 +712,7 @@ export default function Schedule({
         setEditingPost(post);
         setDraftContent(post.content);
         setDraftCategory(post.category ?? categories[0]?.slug ?? '');
+        setDraftAccountId(post.social_account_id);
         setDraftTime(post.scheduled_at.slice(11, 16));
         setDraftStatus(post.status);
         setSaveError(null);
@@ -606,8 +742,37 @@ export default function Schedule({
         });
         setAddContent('');
         setAddCategory(categories[0]?.slug ?? '');
+        setAddAccountIds(activeAccounts[0] ? [activeAccounts[0].id] : []);
         setAddError(null);
     };
+
+    // At least one account must stay selected — an empty selection has no
+    // meaning and the backend rejects it anyway.
+    const toggleAddAccount = (id: number) => {
+        setAddAccountIds((current) =>
+            current.includes(id)
+                ? current.length > 1
+                    ? current.filter((existing) => existing !== id)
+                    : current
+                : [...current, id],
+        );
+        setAddError(null);
+    };
+
+    const selectedAddAccounts = accounts.filter((account) =>
+        addAccountIds.includes(account.id),
+    );
+    const draftAccount = accounts.find(
+        (account) => account.id === draftAccountId,
+    );
+
+    // Paused accounts are hidden from the picker — except the one this post
+    // already targets, which must stay visible or the post would look like it
+    // has no destination at all.
+    const editAccountOptions =
+        draftAccount && !draftAccount.is_active
+            ? [...activeAccounts, draftAccount]
+            : activeAccounts;
 
     const closeAddModal = () => setAddSlot(null);
 
@@ -623,6 +788,7 @@ export default function Schedule({
             {
                 content: addContent,
                 category: addCategory,
+                accounts: addAccountIds,
                 date: addSlot.date,
                 time: addSlot.time,
                 timezone,
@@ -648,6 +814,7 @@ export default function Schedule({
             '/schedule/posts/generate-one',
             {
                 category: addCategory,
+                accounts: addAccountIds,
                 date: addSlot.date,
                 time: addSlot.time,
                 timezone,
@@ -690,6 +857,7 @@ export default function Schedule({
             {
                 content: draftContent,
                 category: draftCategory,
+                social_account_id: draftAccountId,
                 time: draftTime,
                 timezone,
             },
@@ -741,12 +909,20 @@ export default function Schedule({
         }
 
         setScheduling(true);
+        setSaveError(null);
         router.post(
             `/schedule/posts/${editingPost.id}/schedule`,
             {},
             {
                 preserveScroll: true,
                 onSuccess: () => setDraftStatus('scheduled'),
+                // Scheduling is refused for past slots and for posts whose
+                // target account isn't connected — show why instead of
+                // silently doing nothing.
+                onError: (errors) =>
+                    setSaveError(
+                        errors.schedule ?? 'Could not schedule this post.',
+                    ),
                 onFinish: () => setScheduling(false),
             },
         );
@@ -921,6 +1097,38 @@ export default function Schedule({
                                     </Select>
                                 </div>
 
+                                <div className="grid w-52 gap-1.5">
+                                    <Label>For account</Label>
+                                    <Select
+                                        value={
+                                            form.data.account_id
+                                                ? String(form.data.account_id)
+                                                : ''
+                                        }
+                                        onValueChange={(value) =>
+                                            form.setData(
+                                                'account_id',
+                                                Number(value),
+                                            )
+                                        }
+                                        disabled={activeAccounts.length === 0}
+                                    >
+                                        <SelectTrigger className="w-full">
+                                            <SelectValue placeholder="No active accounts" />
+                                        </SelectTrigger>
+                                        <SelectContent className="max-h-72">
+                                            {activeAccounts.map((account) => (
+                                                <SelectItem
+                                                    key={account.id}
+                                                    value={String(account.id)}
+                                                >
+                                                    {account.label}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+
                                 <div className="grid w-36 gap-1.5">
                                     <Label>Per day · {form.data.per_day}</Label>
                                     <Slider
@@ -937,11 +1145,17 @@ export default function Schedule({
 
                                 <Button
                                     type="submit"
-                                    disabled={form.processing || weekHasPosts}
+                                    disabled={
+                                        form.processing ||
+                                        weekHasPosts ||
+                                        activeAccounts.length === 0
+                                    }
                                     title={
-                                        weekHasPosts
-                                            ? 'This week already has posts — edit or delete them below, or switch weeks.'
-                                            : undefined
+                                        activeAccounts.length === 0
+                                            ? 'Connect (or resume) an account on the Connect page first.'
+                                            : weekHasPosts
+                                              ? 'This week already has posts — edit or delete them below, or switch weeks.'
+                                              : undefined
                                     }
                                 >
                                     {form.processing ? (
@@ -1103,6 +1317,7 @@ export default function Schedule({
                                                 post={post}
                                                 categories={categories}
                                                 statuses={statuses}
+                                                platforms={platforms}
                                                 onOpen={() => openPost(post)}
                                             />
                                         ))}
@@ -1168,6 +1383,16 @@ export default function Schedule({
                                             {formatTime(
                                                 editingPost.scheduled_at,
                                             )}
+                                        </p>
+                                    </div>
+
+                                    <div className="grid gap-1.5">
+                                        <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                            Posted to
+                                        </Label>
+                                        <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm">
+                                            {platforms[editingPost.platform] ??
+                                                editingPost.platform}
                                         </p>
                                     </div>
 
@@ -1265,12 +1490,49 @@ export default function Schedule({
                                     </div>
 
                                     <div className="grid gap-1.5">
+                                        <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                            Post to
+                                        </Label>
+                                        <div className="flex flex-wrap gap-2">
+                                            {editAccountOptions.map(
+                                                (account) => (
+                                                    <AccountOption
+                                                        key={account.id}
+                                                        account={account}
+                                                        selected={
+                                                            draftAccountId ===
+                                                            account.id
+                                                        }
+                                                        onSelect={() =>
+                                                            setDraftAccountId(
+                                                                account.id,
+                                                            )
+                                                        }
+                                                    />
+                                                ),
+                                            )}
+                                        </div>
+                                        {draftAccountId === null && (
+                                            <p className="text-xs text-destructive">
+                                                This post's account was
+                                                disconnected — pick another
+                                                before scheduling it.
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <div className="grid gap-1.5">
                                         <div className="flex items-center justify-between">
                                             <Label className="text-xs tracking-wide text-muted-foreground uppercase">
                                                 Content
                                             </Label>
                                             <span className="text-xs text-muted-foreground">
-                                                {draftContent.length}/280
+                                                {draftContent.length}/
+                                                {contentLimit(
+                                                    draftAccount
+                                                        ? [draftAccount]
+                                                        : [],
+                                                )}
                                             </span>
                                         </div>
                                         <Textarea
@@ -1442,12 +1704,47 @@ export default function Schedule({
                             </div>
 
                             <div className="grid gap-1.5">
+                                <Label className="text-xs tracking-wide text-muted-foreground uppercase">
+                                    Post to
+                                </Label>
+                                <div className="flex flex-wrap gap-2">
+                                    {activeAccounts.map((account) => (
+                                        <AccountOption
+                                            key={account.id}
+                                            account={account}
+                                            selected={addAccountIds.includes(
+                                                account.id,
+                                            )}
+                                            onSelect={() =>
+                                                toggleAddAccount(account.id)
+                                            }
+                                        />
+                                    ))}
+                                </div>
+                                {activeAccounts.length === 0 && (
+                                    <p className="text-xs text-muted-foreground">
+                                        No active accounts — connect or resume
+                                        one on the Connect page to schedule
+                                        posts.
+                                    </p>
+                                )}
+                                {addAccountIds.length > 1 && (
+                                    <p className="text-xs text-muted-foreground">
+                                        A separate post is created for each
+                                        account, so you can edit them
+                                        independently afterwards.
+                                    </p>
+                                )}
+                            </div>
+
+                            <div className="grid gap-1.5">
                                 <div className="flex items-center justify-between">
                                     <Label className="text-xs tracking-wide text-muted-foreground uppercase">
                                         Content
                                     </Label>
                                     <span className="text-xs text-muted-foreground">
-                                        {addContent.length}/280
+                                        {addContent.length}/
+                                        {contentLimit(selectedAddAccounts)}
                                     </span>
                                 </div>
                                 <Textarea
@@ -1465,7 +1762,11 @@ export default function Schedule({
                                     type="button"
                                     variant="outline"
                                     className="flex-1"
-                                    disabled={addGenerating || addSaving}
+                                    disabled={
+                                        addGenerating ||
+                                        addSaving ||
+                                        addAccountIds.length === 0
+                                    }
                                     onClick={generateAndAddPost}
                                 >
                                     {addGenerating ? (
@@ -1481,6 +1782,7 @@ export default function Schedule({
                                     disabled={
                                         addSaving ||
                                         addGenerating ||
+                                        addAccountIds.length === 0 ||
                                         addContent.trim() === ''
                                     }
                                     onClick={addManualPost}

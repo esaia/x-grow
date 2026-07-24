@@ -9,6 +9,8 @@ import {
     CardHeader,
     CardTitle,
 } from '@/components/ui/card';
+import { Switch } from '@/components/ui/switch';
+import { cn } from '@/lib/utils';
 
 type Token = {
     id: number;
@@ -17,22 +19,38 @@ type Token = {
     created_at: string | null;
 };
 
-type XAccount = {
-    username: string | null;
+// A connected posting destination: an X account, a LinkedIn member, or a
+// LinkedIn company page (kind = organization).
+type SocialAccount = {
+    id: number;
+    provider: string;
+    kind: string;
+    label: string;
+    is_active: boolean;
+    expires_at: string | null;
+};
+
+const PROVIDER_LABELS: Record<string, string> = {
+    x: 'X',
+    linkedin: 'LinkedIn',
 };
 
 export default function Connect({
     tokens,
     apiBaseUrl,
     newToken,
-    xAccount,
+    accounts,
+    linkedinPagesEnabled,
 }: {
     tokens: Token[];
     apiBaseUrl: string;
     newToken: string | null;
-    xAccount: XAccount | null;
+    accounts: SocialAccount[];
+    linkedinPagesEnabled: boolean;
 }) {
-    const { errors } = usePage().props as { errors?: { x?: string } };
+    const { errors } = usePage().props as {
+        errors?: { x?: string; linkedin?: string };
+    };
     const form = useForm({ name: 'Chrome extension' });
     const [copied, setCopied] = useState<string | null>(null);
 
@@ -52,9 +70,22 @@ export default function Connect({
         });
     };
 
-    const disconnectX = () => {
-        router.delete('/connect/x', { preserveScroll: true });
+    const disconnect = (id: number) => {
+        router.delete(`/connect/accounts/${id}`, { preserveScroll: true });
     };
+
+    // Pausing keeps the connection and its scheduled posts — they just stop
+    // publishing until it's switched back on.
+    const setActive = (id: number, isActive: boolean) => {
+        router.put(
+            `/connect/accounts/${id}`,
+            { is_active: isActive },
+            { preserveScroll: true },
+        );
+    };
+
+    const byProvider = (provider: string) =>
+        accounts.filter((account) => account.provider === provider);
 
     return (
         <>
@@ -92,44 +123,119 @@ export default function Connect({
 
                     <Card>
                         <CardHeader>
-                            <CardTitle>Connect your X account</CardTitle>
+                            <CardTitle>Posting accounts</CardTitle>
                             <CardDescription>
-                                Required to auto-publish Scheduled posts from
-                                the Weekly Schedule at their scheduled time.
-                                Without this, posts you approve just stay
-                                Scheduled and won't go out on their own.
+                                Every account you connect becomes a target you
+                                can schedule posts to. Switch one off to pause
+                                it — it keeps its connection and its posts, but
+                                stops publishing until you switch it back on.
                             </CardDescription>
                         </CardHeader>
-                        <CardContent className="flex flex-col gap-3">
-                            {errors?.x && (
+                        <CardContent className="flex flex-col gap-4">
+                            {(errors?.x || errors?.linkedin) && (
                                 <p className="text-sm text-destructive">
-                                    {errors.x}
+                                    {errors.x ?? errors.linkedin}
                                 </p>
                             )}
-                            {xAccount ? (
-                                <div className="flex items-center justify-between gap-4">
-                                    <p className="text-sm">
-                                        Connected as{' '}
-                                        <span className="font-medium">
-                                            @{xAccount.username}
-                                        </span>
-                                    </p>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={disconnectX}
-                                    >
-                                        Disconnect
-                                    </Button>
-                                </div>
+
+                            {accounts.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">
+                                    No accounts connected yet. Until you connect
+                                    one, posts you approve stay Scheduled and
+                                    won't go out on their own.
+                                </p>
                             ) : (
-                                <Button asChild>
+                                <ul className="divide-y divide-border">
+                                    {accounts.map((account) => (
+                                        <li
+                                            key={account.id}
+                                            className="flex items-center justify-between gap-4 py-3"
+                                        >
+                                            <div
+                                                className={cn(
+                                                    'min-w-0',
+                                                    !account.is_active &&
+                                                        'opacity-50',
+                                                )}
+                                            >
+                                                <p className="truncate font-medium">
+                                                    {account.label}
+                                                    {account.kind ===
+                                                        'organization' && (
+                                                        <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground">
+                                                            Company page
+                                                        </span>
+                                                    )}
+                                                </p>
+                                                <p className="text-xs text-muted-foreground">
+                                                    {PROVIDER_LABELS[
+                                                        account.provider
+                                                    ] ?? account.provider}
+                                                    {account.expires_at
+                                                        ? ` · access expires ${account.expires_at}`
+                                                        : ''}
+                                                    {!account.is_active &&
+                                                        ' · paused'}
+                                                </p>
+                                            </div>
+                                            <div className="flex shrink-0 items-center gap-3">
+                                                <Switch
+                                                    checked={account.is_active}
+                                                    onCheckedChange={(
+                                                        checked,
+                                                    ) =>
+                                                        setActive(
+                                                            account.id,
+                                                            checked,
+                                                        )
+                                                    }
+                                                    aria-label={`${account.is_active ? 'Pause' : 'Resume'} ${account.label}`}
+                                                />
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() =>
+                                                        disconnect(account.id)
+                                                    }
+                                                >
+                                                    Disconnect
+                                                </Button>
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+
+                            <div className="flex flex-wrap gap-2">
+                                <Button asChild variant="outline">
                                     <a href="/connect/x/redirect">
-                                        Connect X account
+                                        {byProvider('x').length > 0
+                                            ? 'Connect another X account'
+                                            : 'Connect X account'}
                                     </a>
                                 </Button>
-                            )}
+                                <Button asChild variant="outline">
+                                    <a href="/connect/linkedin/redirect">
+                                        {byProvider('linkedin').length > 0
+                                            ? 'Connect another LinkedIn account'
+                                            : 'Connect LinkedIn account'}
+                                    </a>
+                                </Button>
+                                {linkedinPagesEnabled && (
+                                    <Button asChild variant="outline">
+                                        <a href="/connect/linkedin/pages/redirect">
+                                            Connect LinkedIn pages
+                                        </a>
+                                    </Button>
+                                )}
+                            </div>
+
+                            <p className="text-xs text-muted-foreground">
+                                {linkedinPagesEnabled
+                                    ? '“Connect LinkedIn pages” adds every company page you administer as its own target.'
+                                    : 'LinkedIn company pages need a second LinkedIn app whose only product is the Community Management API — LinkedIn refuses to grant it alongside the sign-in products. Set LINKEDIN_PAGES_CLIENT_ID / LINKEDIN_PAGES_CLIENT_SECRET to enable it.'}
+                            </p>
                         </CardContent>
                     </Card>
 

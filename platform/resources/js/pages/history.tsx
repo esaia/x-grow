@@ -1,12 +1,7 @@
 import { Head, Link } from '@inertiajs/react';
 import Heading from '@/components/heading';
 import { Badge } from '@/components/ui/badge';
-import {
-    Card,
-    CardContent,
-    CardHeader,
-    CardTitle,
-} from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
 type Generation = {
@@ -64,7 +59,7 @@ export default function History({
                                             {g.input_context}
                                         </span>
                                     </CardTitle>
-                                    <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
+                                    <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">
                                         {g.created_at}
                                     </span>
                                 </CardHeader>

@@ -2,8 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Models\SocialAccount;
 use App\Models\User;
-use App\Models\XAccount;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -12,12 +12,15 @@ class InspirationTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function connectX(User $user): XAccount
+    private function connectX(User $user): SocialAccount
     {
-        return XAccount::create([
+        return SocialAccount::create([
             'user_id' => $user->id,
-            'x_user_id' => '111',
-            'username' => 'owner',
+            'provider' => SocialAccount::PROVIDER_X,
+            'kind' => SocialAccount::KIND_PERSON,
+            'external_id' => '111',
+            'name' => 'owner',
+            'handle' => 'owner',
             'access_token' => 'access-token',
             'refresh_token' => 'refresh-token',
             'expires_at' => now()->addHour(),
@@ -191,7 +194,7 @@ class InspirationTest extends TestCase
             'user_id' => $user->id,
             'content' => 'A brand new post.',
             'status' => 'posted',
-            'x_tweet_id' => '12345',
+            'external_post_id' => '12345',
         ]);
     }
 
@@ -225,6 +228,7 @@ class InspirationTest extends TestCase
     public function test_schedule_creates_an_approved_post(): void
     {
         $user = User::factory()->create();
+        $account = $this->connectX($user);
         $date = now()->addDay()->toDateString();
 
         $this->actingAs($user)
@@ -241,7 +245,24 @@ class InspirationTest extends TestCase
             'user_id' => $user->id,
             'content' => 'Later post.',
             'status' => 'scheduled',
+            'social_account_id' => $account->id,
         ]);
+    }
+
+    public function test_schedule_requires_a_connected_x_account(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->post(route('inspiration.schedule'), [
+                'content' => 'Nowhere to post this.',
+                'date' => now()->addDay()->toDateString(),
+                'time' => '10:30',
+                'timezone' => 'UTC',
+            ])
+            ->assertSessionHasErrors('time');
+
+        $this->assertDatabaseCount('scheduled_posts', 0);
     }
 
     public function test_schedule_rejects_a_past_time(): void

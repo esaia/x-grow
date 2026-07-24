@@ -71,8 +71,23 @@ class User extends Authenticatable implements PasskeyUser
         return $this->hasMany(TrackedCreator::class);
     }
 
+    /** @return HasMany<SocialAccount, $this> */
+    public function socialAccounts(): HasMany
+    {
+        return $this->hasMany(SocialAccount::class);
+    }
+
+    /**
+     * The user's first connected X account. Kept for the X-only reading
+     * paths (Inspiration scanning via XReaderService), which need *an*
+     * authorized X token rather than a specific chosen destination.
+     *
+     * @return HasOne<SocialAccount, $this>
+     */
     public function xAccount(): HasOne
     {
-        return $this->hasOne(XAccount::class);
+        return $this->hasOne(SocialAccount::class)
+            ->where('provider', SocialAccount::PROVIDER_X)
+            ->oldest('id');
     }
 }

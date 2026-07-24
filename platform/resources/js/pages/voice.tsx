@@ -17,23 +17,28 @@ import { cn } from '@/lib/utils';
 // User-facing explanation + example for each tone the backend supports.
 const TONE_META: Record<string, { description: string; example: string }> = {
     balanced: {
-        description: 'Natural and confident. Useful and human — a safe default.',
+        description:
+            'Natural and confident. Useful and human — a safe default.',
         example: "Here's what actually moved the needle for me.",
     },
     witty: {
-        description: 'Clever and playful. Lands a light joke or a surprising angle.',
+        description:
+            'Clever and playful. Lands a light joke or a surprising angle.',
         example: 'I tried the 5am club. My bed filed a complaint.',
     },
     professional: {
-        description: 'Credible, clear, and useful. Authoritative but not stiff.',
+        description:
+            'Credible, clear, and useful. Authoritative but not stiff.',
         example: 'Three lessons from shipping to my first 10k users.',
     },
     contrarian: {
-        description: 'Challenges the common take with a defensible, non-obvious point.',
+        description:
+            'Challenges the common take with a defensible, non-obvious point.',
         example: 'Everyone says "niche down." That advice is mostly wrong.',
     },
     hype: {
-        description: 'Energetic and motivating. Short punchy lines that build momentum.',
+        description:
+            'Energetic and motivating. Short punchy lines that build momentum.',
         example: 'This is the year. Build the thing. Ship it today.',
     },
     friendly: {
@@ -41,7 +46,8 @@ const TONE_META: Record<string, { description: string; example: string }> = {
         example: 'honestly, so happy for you — this is huge.',
     },
     funny: {
-        description: 'Genuinely funny. Jokes, absurd exaggeration, and unexpected punchlines — never corny.',
+        description:
+            'Genuinely funny. Jokes, absurd exaggeration, and unexpected punchlines — never corny.',
         example: 'my business plan is just vibes and a Stripe account.',
     },
 };
@@ -115,7 +121,7 @@ export default function Voice({
                     </CardHeader>
                     {learned.voice_analysis && (
                         <CardContent>
-                            <p className="whitespace-pre-wrap rounded-lg border border-border bg-background/50 p-3 text-sm text-muted-foreground">
+                            <p className="rounded-lg border border-border bg-background/50 p-3 text-sm whitespace-pre-wrap text-muted-foreground">
                                 {learned.voice_analysis}
                             </p>
                         </CardContent>
@@ -221,8 +227,8 @@ export default function Voice({
                         <CardHeader>
                             <CardTitle>About you</CardTitle>
                             <CardDescription>
-                                Who you are and what your account is about — used
-                                to keep replies relevant.
+                                Who you are and what your account is about —
+                                used to keep replies relevant.
                             </CardDescription>
                         </CardHeader>
                         <CardContent className="grid grid-cols-1 gap-2">
@@ -242,12 +248,11 @@ export default function Voice({
                         <CardHeader>
                             <CardTitle>Facts (only true things)</CardTitle>
                             <CardDescription>
-                                Real, specific facts the AI is allowed to
-                                state — dates, timelines, metrics, stack. This
-                                stops it from guessing numbers like "6 months"
-                                out of thin air. If it's not listed here, the
-                                AI should write around it instead of inventing
-                                it.
+                                Real, specific facts the AI is allowed to state
+                                — dates, timelines, metrics, stack. This stops
+                                it from guessing numbers like "6 months" out of
+                                thin air. If it's not listed here, the AI should
+                                write around it instead of inventing it.
                             </CardDescription>
                         </CardHeader>
                         <CardContent className="grid grid-cols-1 gap-2">
@@ -290,11 +295,11 @@ export default function Voice({
                         <CardHeader>
                             <CardTitle>News for “News” posts</CardTitle>
                             <CardDescription>
-                                What kind of news you want your “News”
-                                scheduled posts to cover — the area, companies,
-                                or angle. Used only for the News category. The
-                                AI sticks to facts it’s confident are real and
-                                won’t invent breaking news.
+                                What kind of news you want your “News” scheduled
+                                posts to cover — the area, companies, or angle.
+                                Used only for the News category. The AI sticks
+                                to facts it’s confident are real and won’t
+                                invent breaking news.
                             </CardDescription>
                         </CardHeader>
                         <CardContent className="grid grid-cols-1 gap-2">
@@ -316,8 +321,8 @@ export default function Voice({
                         <CardHeader>
                             <CardTitle>Who you want to reach</CardTitle>
                             <CardDescription>
-                                The audience you're trying to grow — the AI tailors
-                                replies and posts toward them.
+                                The audience you're trying to grow — the AI
+                                tailors replies and posts toward them.
                             </CardDescription>
                         </CardHeader>
                         <CardContent className="grid grid-cols-1 gap-2">
@@ -360,9 +365,9 @@ export default function Voice({
                         <CardHeader>
                             <CardTitle>Your links</CardTitle>
                             <CardDescription>
-                                Websites, products, or profiles (one per line). The
-                                AI only shares a link when it's genuinely relevant —
-                                never as spam.
+                                Websites, products, or profiles (one per line).
+                                The AI only shares a link when it's genuinely
+                                relevant — never as spam.
                             </CardDescription>
                         </CardHeader>
                         <CardContent className="grid grid-cols-1 gap-2">

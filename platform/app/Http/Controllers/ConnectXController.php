@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\XAccount;
+use App\Models\SocialAccount;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
@@ -94,27 +94,25 @@ class ConnectXController extends Controller
 
         $me = $meResponse->json('data');
 
-        XAccount::updateOrCreate(
-            ['user_id' => $request->user()->id],
+        // Keyed on the X user id, not just the user — connecting a second X
+        // account adds a destination, while re-connecting the same one just
+        // refreshes its tokens.
+        $account = SocialAccount::updateOrCreate(
             [
-                'x_user_id' => $me['id'],
-                'username' => $me['username'] ?? null,
+                'user_id' => $request->user()->id,
+                'provider' => SocialAccount::PROVIDER_X,
+                'external_id' => $me['id'],
+            ],
+            [
+                'kind' => SocialAccount::KIND_PERSON,
+                'name' => $me['name'] ?? $me['username'] ?? null,
+                'handle' => $me['username'] ?? null,
                 'access_token' => $tokens['access_token'],
                 'refresh_token' => $tokens['refresh_token'] ?? null,
                 'expires_at' => now()->addSeconds((int) ($tokens['expires_in'] ?? 7200)),
             ]
         );
 
-        return to_route('connect.show')->with('toast', 'X account connected.');
-    }
-
-    /**
-     * Disconnect the user's X account.
-     */
-    public function destroy(Request $request): RedirectResponse
-    {
-        $request->user()->xAccount?->delete();
-
-        return to_route('connect.show')->with('toast', 'X account disconnected.');
+        return to_route('connect.show')->with('toast', $account->label().' connected.');
     }
 }

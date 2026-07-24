@@ -260,13 +260,16 @@ class InspirationController extends Controller
         ]);
 
         $user = $request->user();
+        $account = $user->xAccount;
 
-        if (! $user->xAccount) {
+        if (! $account) {
             return back()->withErrors(['publish' => 'Connect your X account first to post.']);
         }
 
         $post = $user->scheduledPosts()->create([
             'content' => $data['content'],
+            'platform' => ScheduledPost::PLATFORM_X,
+            'social_account_id' => $account->id,
             'status' => ScheduledPost::STATUS_DRAFT,
             'scheduled_at' => now(),
             'timezone' => $data['timezone'] ?? config('app.timezone'),
@@ -309,12 +312,25 @@ class InspirationController extends Controller
             return back()->withErrors(['time' => 'That time is already in the past. Pick a later slot.']);
         }
 
-        if ($user->scheduledPosts()->where('scheduled_at', $scheduledAt)->exists()) {
+        $account = $user->xAccount;
+
+        if (! $account) {
+            return back()->withErrors(['time' => 'Connect your X account first to schedule a post.']);
+        }
+
+        $conflicts = $user->scheduledPosts()
+            ->where('social_account_id', $account->id)
+            ->where('scheduled_at', $scheduledAt)
+            ->exists();
+
+        if ($conflicts) {
             return back()->withErrors(['time' => 'Another post is already scheduled at that time. Pick a different slot.']);
         }
 
         $user->scheduledPosts()->create([
             'content' => $data['content'],
+            'platform' => ScheduledPost::PLATFORM_X,
+            'social_account_id' => $account->id,
             'status' => ScheduledPost::STATUS_SCHEDULED,
             'scheduled_at' => $scheduledAt,
             'timezone' => $timezone,

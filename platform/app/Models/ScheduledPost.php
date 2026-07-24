@@ -24,17 +24,29 @@ class ScheduledPost extends Model
         self::STATUS_FAILED => 'Failed',
     ];
 
+    public const PLATFORM_X = 'x';
+
+    public const PLATFORM_LINKEDIN = 'linkedin';
+
+    /** @var array<string, string> */
+    public const PLATFORMS = [
+        self::PLATFORM_X => 'X',
+        self::PLATFORM_LINKEDIN => 'LinkedIn',
+    ];
+
     protected $fillable = [
         'user_id',
         'generation_id',
         'content',
         'category',
+        'platform',
+        'social_account_id',
         'status',
         'error',
         'scheduled_at',
         'timezone',
         'posted_at',
-        'x_tweet_id',
+        'external_post_id',
     ];
 
     protected $casts = [
@@ -50,6 +62,18 @@ class ScheduledPost extends Model
     public function generation(): BelongsTo
     {
         return $this->belongsTo(Generation::class);
+    }
+
+    /**
+     * The connected account this post publishes to. Null once that account
+     * has been disconnected — the post survives as an unpublishable draft
+     * until it's retargeted.
+     *
+     * @return BelongsTo<SocialAccount, $this>
+     */
+    public function socialAccount(): BelongsTo
+    {
+        return $this->belongsTo(SocialAccount::class);
     }
 
     /**

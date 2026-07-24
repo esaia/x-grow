@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Generation;
 use App\Models\ScheduledPost;
+use App\Models\SocialAccount;
 use App\Models\User;
 use App\Services\ClaudeService;
 use App\Services\PromptBuilder;
@@ -42,6 +43,8 @@ class ScheduleController extends Controller
                 'id' => $post->id,
                 'content' => $post->content,
                 'category' => $post->category,
+                'platform' => $post->platform,
+                'social_account_id' => $post->social_account_id,
                 'status' => $post->status,
                 'error' => $post->error,
                 'scheduled_at' => $post->scheduled_at->toIso8601String(),
@@ -54,6 +57,10 @@ class ScheduleController extends Controller
                 ->map(fn (string $label, string $slug) => ['slug' => $slug, 'label' => $label])
                 ->values(),
             'statuses' => ScheduledPost::STATUSES,
+            'platforms' => ScheduledPost::PLATFORMS,
+            // Every connected destination the user can target. An empty list
+            // means nothing can be scheduled until they connect an account.
+            'accounts' => $this->accountOptions($request->user()),
         ]);
     }
 
@@ -74,11 +81,27 @@ class ScheduleController extends Controller
             // is stored as a naive wall-clock value, so this is required to
             // later compute the real due instant for auto-posting.
             'timezone' => ['nullable', 'string', 'timezone'],
+            // Which connected account the whole week is written for.
+            'account_id' => ['nullable', 'integer'],
         ]);
 
         $timezone = $data['timezone'] ?? config('app.timezone');
 
         $user = $request->user();
+
+        $account = $user->socialAccounts()
+            ->active()
+            ->when($data['account_id'] ?? null, fn ($query, $id) => $query->whereKey($id))
+            ->orderByRaw('provider = ? desc', [SocialAccount::PROVIDER_X])
+            ->orderBy('id')
+            ->first();
+
+        if (! $account) {
+            return back()->withErrors([
+                'generate' => 'Connect an account on the Connect page before generating a week of posts.',
+            ]);
+        }
+
         $weekStart = $this->resolveWeekStart($data['week_start']);
         $weekEnd = $weekStart->copy()->endOfWeek(Carbon::SUNDAY);
         $perDay = (int) $data['per_day'];
@@ -113,7 +136,7 @@ class ScheduleController extends Controller
         }
 
         DB::transaction(function () use (
-            $user, $weekStart, $weekEnd, $perDay, $rangeStartMinutes, $rangeEndMinutes, $data, $result, $categories, $timezone
+            $user, $weekStart, $weekEnd, $perDay, $rangeStartMinutes, $rangeEndMinutes, $data, $result, $categories, $timezone, $account
         ) {
             $user->scheduledPosts()
                 ->whereBetween('scheduled_at', [$weekStart, $weekEnd])
@@ -157,6 +180,11 @@ class ScheduleController extends Controller
                         'generation_id' => $generation->id,
                         'content' => $options[$index],
                         'category' => $categories[$index] ?? null,
+                        // A generated week is written for one account; other
+                        // accounts are filled per-slot, or by retargeting a
+                        // draft in the edit modal.
+                        'platform' => $account->provider,
+                        'social_account_id' => $account->id,
                         'status' => ScheduledPost::STATUS_DRAFT,
                         'scheduled_at' => $scheduledAt,
                         'timezone' => $timezone,
@@ -169,13 +197,17 @@ class ScheduleController extends Controller
     }
 
     /**
-     * Create a single draft post manually (empty-slot "Add post" flow).
+     * Create a draft post manually (empty-slot "Add post" flow) — one row per
+     * selected platform, so each target account can then be edited, approved
+     * and published independently.
      */
     public function store(Request $request): RedirectResponse
     {
         $data = $request->validate([
             'content' => ['required', 'string'],
             'category' => ['required', 'string', 'in:'.implode(',', array_keys(PromptBuilder::POST_CATEGORIES))],
+            'accounts' => ['required', 'array', 'min:1'],
+            'accounts.*' => ['integer'],
             'date' => ['required', 'date'],
             'time' => ['required', 'date_format:H:i'],
             'timezone' => ['nullable', 'string', 'timezone'],
@@ -183,22 +215,38 @@ class ScheduleController extends Controller
 
         $user = $request->user();
         $scheduledAt = Carbon::parse($data['date'])->setTimeFromTimeString($data['time']);
+        $accounts = $this->ownedAccounts($user, $data['accounts']);
 
-        if ($this->hasConflict($user, $scheduledAt)) {
-            return back()->withErrors([
-                'time' => 'Another post is already scheduled at that time on this day. Pick a different time.',
-            ]);
+        if (count($accounts) !== count(array_unique($data['accounts']))) {
+            return back()->withErrors(['accounts' => 'One of the selected accounts is paused or no longer connected.']);
         }
 
-        $user->scheduledPosts()->create([
-            'content' => $data['content'],
-            'category' => $data['category'],
-            'status' => ScheduledPost::STATUS_DRAFT,
-            'scheduled_at' => $scheduledAt,
-            'timezone' => $data['timezone'] ?? config('app.timezone'),
-        ]);
+        // Check every account up front so a partial batch is never created.
+        foreach ($accounts as $accountId => $provider) {
+            if ($this->hasConflict($user, $scheduledAt, (int) $accountId)) {
+                return back()->withErrors([
+                    'time' => 'That account already has a post scheduled at that time on this day. Pick a different time.',
+                ]);
+            }
+        }
 
-        return back()->with('toast', 'Post added to schedule.');
+        DB::transaction(function () use ($user, $data, $scheduledAt, $accounts) {
+            foreach ($accounts as $accountId => $provider) {
+                $user->scheduledPosts()->create([
+                    'content' => $data['content'],
+                    'category' => $data['category'],
+                    'platform' => $provider,
+                    'social_account_id' => $accountId,
+                    'status' => ScheduledPost::STATUS_DRAFT,
+                    'scheduled_at' => $scheduledAt,
+                    'timezone' => $data['timezone'] ?? config('app.timezone'),
+                ]);
+            }
+        });
+
+        return back()->with('toast', count($accounts) > 1
+            ? 'Posts added to schedule.'
+            : 'Post added to schedule.');
     }
 
     /**
@@ -211,6 +259,8 @@ class ScheduleController extends Controller
     {
         $data = $request->validate([
             'category' => ['required', 'string', 'in:'.implode(',', array_keys(PromptBuilder::POST_CATEGORIES))],
+            'accounts' => ['required', 'array', 'min:1'],
+            'accounts.*' => ['integer'],
             'date' => ['required', 'date'],
             'time' => ['required', 'date_format:H:i'],
             'timezone' => ['nullable', 'string', 'timezone'],
@@ -219,10 +269,12 @@ class ScheduleController extends Controller
         $user = $request->user();
         $scheduledAt = Carbon::parse($data['date'])->setTimeFromTimeString($data['time']);
 
-        if ($this->hasConflict($user, $scheduledAt)) {
-            return back()->withErrors([
-                'time' => 'Another post is already scheduled at that time on this day. Pick a different time.',
-            ]);
+        foreach (array_keys($this->ownedAccounts($user, $data['accounts'])) as $accountId) {
+            if ($this->hasConflict($user, $scheduledAt, (int) $accountId)) {
+                return back()->withErrors([
+                    'time' => 'That account already has a post scheduled at that time on this day. Pick a different time.',
+                ]);
+            }
         }
 
         try {
@@ -259,15 +311,58 @@ class ScheduleController extends Controller
     }
 
     /**
-     * True if the user already has a post at exactly this instant (optionally
-     * excluding one post's own row, for in-place edits).
+     * True if the user already has a post for this account at exactly this
+     * instant (optionally excluding one post's own row, for in-place edits).
+     * Scoped per account so posts to different accounts — even two X ones —
+     * can legitimately share a slot, while one account can't be double-booked.
      */
-    private function hasConflict(User $user, CarbonInterface $scheduledAt, ?int $excludePostId = null): bool
+    private function hasConflict(User $user, CarbonInterface $scheduledAt, int $accountId, ?int $excludePostId = null): bool
     {
         return $user->scheduledPosts()
             ->when($excludePostId, fn ($query) => $query->where('id', '!=', $excludePostId))
+            ->where('social_account_id', $accountId)
             ->where('scheduled_at', $scheduledAt)
             ->exists();
+    }
+
+    /**
+     * The user's connected destinations, as the frontend's "Post to" pills.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function accountOptions(User $user): array
+    {
+        return $user->socialAccounts()
+            ->orderBy('provider')
+            ->orderBy('kind')
+            ->orderBy('id')
+            ->get()
+            ->map(fn (SocialAccount $account) => [
+                'id' => $account->id,
+                'provider' => $account->provider,
+                'kind' => $account->kind,
+                'label' => $account->label(),
+                // Paused accounts are still listed so a post already aimed at
+                // one shows its target, but they can't be picked.
+                'is_active' => $account->is_active,
+            ])
+            ->all();
+    }
+
+    /**
+     * The given account ids that actually belong to this user, mapped to
+     * their provider — the authorization check for every targeting request.
+     *
+     * @param  array<int, int|string>  $ids
+     * @return array<int, string>
+     */
+    private function ownedAccounts(User $user, array $ids): array
+    {
+        return $user->socialAccounts()
+            ->active()
+            ->whereIn('id', $ids)
+            ->pluck('provider', 'id')
+            ->all();
     }
 
     /**
@@ -353,34 +448,47 @@ class ScheduleController extends Controller
         $data = $request->validate([
             'content' => ['required', 'string'],
             'category' => ['required', 'string', 'in:'.implode(',', array_keys(PromptBuilder::POST_CATEGORIES))],
+            // A row targets exactly one account — posting to several is
+            // several rows.
+            'social_account_id' => ['required', 'integer'],
             'time' => ['required', 'date_format:H:i'],
             'timezone' => ['nullable', 'string', 'timezone'],
         ]);
 
+        $accounts = $this->ownedAccounts($request->user(), [$data['social_account_id']]);
+
+        if ($accounts === []) {
+            return back()->withErrors(['social_account_id' => 'That account is paused or no longer connected.']);
+        }
+
         $scheduledAt = $post->scheduled_at->copy()->setTimeFromTimeString($data['time']);
 
-        if ($this->hasConflict($request->user(), $scheduledAt, $post->id)) {
+        if ($this->hasConflict($request->user(), $scheduledAt, (int) $data['social_account_id'], $post->id)) {
             return back()->withErrors([
-                'time' => 'Another post is already scheduled at that time on this day. Pick a different time.',
+                'time' => 'That account already has a post scheduled at that time on this day. Pick a different time.',
             ]);
         }
 
         // Editing content/category on an already-approved post requires
         // re-approval before it's eligible to auto-post again — an in-place
         // edit right before the scheduled time should never silently publish
-        // unreviewed content. A pure time change doesn't alter the reviewed
-        // content, so it keeps the post scheduled (just moves when it posts).
-        // Only revert if something actually changed — otherwise clicking
-        // Schedule and then Save with no edits would needlessly bounce the
-        // post straight back to Draft.
+        // unreviewed content. Retargeting it to another account counts too:
+        // approval was given for one specific account. A pure time change
+        // doesn't alter the reviewed content, so it keeps the post scheduled
+        // (just moves when it posts). Only revert if something actually
+        // changed — otherwise clicking Schedule and then Save with no edits
+        // would needlessly bounce the post straight back to Draft.
         $contentChanged = $data['content'] !== $post->content
-            || $data['category'] !== $post->category;
+            || $data['category'] !== $post->category
+            || (int) $data['social_account_id'] !== (int) $post->social_account_id;
 
         $revertedToDraft = $post->status === ScheduledPost::STATUS_SCHEDULED && $contentChanged;
 
         $post->update([
             'content' => $data['content'],
             'category' => $data['category'],
+            'social_account_id' => $data['social_account_id'],
+            'platform' => $accounts[$data['social_account_id']],
             'scheduled_at' => $scheduledAt,
             'timezone' => $data['timezone'] ?? $post->timezone,
             'status' => $revertedToDraft ? ScheduledPost::STATUS_DRAFT : $post->status,
@@ -450,6 +558,18 @@ class ScheduleController extends Controller
             ]);
         }
 
+        if (! $post->social_account_id) {
+            return back()->withErrors([
+                'schedule' => 'This post has no connected account to publish to — pick one before scheduling it.',
+            ]);
+        }
+
+        if (! $post->socialAccount?->is_active) {
+            return back()->withErrors([
+                'schedule' => 'The account this post targets is paused — resume it on the Connect page first.',
+            ]);
+        }
+
         $post->update(['status' => ScheduledPost::STATUS_SCHEDULED, 'error' => null]);
 
         return back()->with('toast', 'Post scheduled — it will publish automatically at its time.');
@@ -480,16 +600,24 @@ class ScheduleController extends Controller
         // "Still in the future" has to account for each post's own timezone
         // (see ScheduledPost::realScheduledAt) rather than comparing the
         // naive wall-clock scheduled_at against the server's now() directly.
-        $ids = $request->user()->scheduledPosts()
+        $drafts = $request->user()->scheduledPosts()
             ->whereBetween('scheduled_at', [$weekStart, $weekEnd])
             ->where('status', ScheduledPost::STATUS_DRAFT)
             ->get()
-            ->filter(fn (ScheduledPost $post) => $post->realScheduledAt()->isFuture())
-            ->pluck('id');
+            ->filter(fn (ScheduledPost $post) => $post->realScheduledAt()->isFuture());
 
-        ScheduledPost::whereIn('id', $ids)->update(['status' => ScheduledPost::STATUS_SCHEDULED, 'error' => null]);
+        // Posts whose target account was disconnected can never publish, so
+        // they're skipped rather than failing the whole batch.
+        [$eligible, $skipped] = $drafts->partition(
+            fn (ScheduledPost $post) => $post->socialAccount?->is_active === true,
+        );
 
-        return back()->with('toast', 'All draft posts this week are now scheduled.');
+        ScheduledPost::whereIn('id', $eligible->pluck('id'))
+            ->update(['status' => ScheduledPost::STATUS_SCHEDULED, 'error' => null]);
+
+        return back()->with('toast', $skipped->isEmpty()
+            ? 'All draft posts this week are now scheduled.'
+            : $eligible->count().' draft posts scheduled — '.$skipped->count().' skipped because their account is paused or disconnected.');
     }
 
     /**

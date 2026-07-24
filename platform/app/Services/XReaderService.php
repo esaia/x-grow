@@ -2,7 +2,7 @@
 
 namespace App\Services;
 
-use App\Models\XAccount;
+use App\Models\SocialAccount;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -28,7 +28,7 @@ class XReaderService
      *
      * @return array{x_user_id: string, username: string, name: ?string, avatar_url: ?string, followers_count: ?int}|null
      */
-    public function lookupUser(XAccount $account, string $handle): ?array
+    public function lookupUser(SocialAccount $account, string $handle): ?array
     {
         $token = $this->authorizedToken($account);
 
@@ -61,7 +61,7 @@ class XReaderService
      *
      * @return array<int, array{x_tweet_id: string, content: string, created_at: ?string, metrics: array<string, int>}>
      */
-    public function fetchRecentPosts(XAccount $account, string $xUserId, int $max = 50): array
+    public function fetchRecentPosts(SocialAccount $account, string $xUserId, int $max = 50): array
     {
         $token = $this->authorizedToken($account);
 
@@ -113,7 +113,7 @@ class XReaderService
      * Return a usable bearer token for the account, refreshing first if it has
      * expired. Null if there is no way to obtain one.
      */
-    private function authorizedToken(XAccount $account): ?string
+    private function authorizedToken(SocialAccount $account): ?string
     {
         if ($account->isExpired() && ! $this->refresh($account)) {
             return null;
@@ -127,7 +127,7 @@ class XReaderService
      * use, so the new one must be persisted or the next refresh will fail.
      * (Mirrors XPostingService::refresh.)
      */
-    private function refresh(XAccount $account): bool
+    private function refresh(SocialAccount $account): bool
     {
         if (! $account->refresh_token) {
             return false;

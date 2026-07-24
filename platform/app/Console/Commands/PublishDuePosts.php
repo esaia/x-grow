@@ -3,23 +3,24 @@
 namespace App\Console\Commands;
 
 use App\Models\ScheduledPost;
-use App\Services\XPostingService;
+use App\Services\SocialPublisher;
 use Illuminate\Console\Command;
 use Throwable;
 
 /**
- * Publishes every Scheduled post whose time has arrived to X. Run every
- * minute by the scheduler (see routes/console.php). Only ever touches
- * posts the user explicitly approved via ScheduleController::schedule() —
- * drafts are never auto-posted.
+ * Publishes every Scheduled post whose time has arrived to its target
+ * platform (see App\Services\SocialPublisher). Run every minute by the
+ * scheduler (see routes/console.php). Only ever touches posts the user
+ * explicitly approved via ScheduleController::schedule() — drafts are
+ * never auto-posted.
  */
 class PublishDuePosts extends Command
 {
     protected $signature = 'schedule:publish-due-posts';
 
-    protected $description = 'Publish scheduled posts whose time has arrived to X.';
+    protected $description = 'Publish scheduled posts whose time has arrived to X or LinkedIn.';
 
-    public function __construct(private readonly XPostingService $x)
+    public function __construct(private readonly SocialPublisher $publisher)
     {
         parent::__construct();
     }
@@ -39,8 +40,14 @@ class PublishDuePosts extends Command
                         continue;
                     }
 
+                    // A paused account holds its posts rather than failing
+                    // them: they stay Scheduled and go out once it's resumed.
+                    if ($post->socialAccount && ! $post->socialAccount->is_active) {
+                        continue;
+                    }
+
                     try {
-                        $this->x->publish($post);
+                        $this->publisher->publish($post);
                     } catch (Throwable $e) {
                         $post->update(['status' => ScheduledPost::STATUS_FAILED, 'error' => $e->getMessage()]);
                         report($e);

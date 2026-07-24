@@ -27,6 +27,9 @@ export interface ComposerContext {
   tweet: string;
   /** The visible conversation above the composer (reply mode only). */
   threadContext: string;
+  /** The individual tweets above the composer, oldest first — the original
+   * post through the immediate comment being replied to (reply mode only). */
+  contextTweets: string[];
 }
 
 /**
@@ -109,14 +112,16 @@ export function readComposerContext(toolbar: HTMLElement): ComposerContext | nul
 
   if (tweetsBefore.length === 0) {
     // Nothing above the composer → it's a brand-new post.
-    return { mode: 'post', editor, tweet: '', threadContext: '' };
+    return { mode: 'post', editor, tweet: '', threadContext: '', contextTweets: [] };
   }
 
   const tweet = tweetsBefore[tweetsBefore.length - 1];
-  // Include up to the last few tweets as conversation context.
-  const threadContext = tweetsBefore.slice(-4).join('\n---\n');
+  // Include up to the last few tweets as conversation context — this carries
+  // the original post through to the immediate comment, not just the comment.
+  const contextTweets = tweetsBefore.slice(-4);
+  const threadContext = contextTweets.join('\n---\n');
 
-  return { mode: 'reply', editor, tweet, threadContext };
+  return { mode: 'reply', editor, tweet, threadContext, contextTweets };
 }
 
 /**
