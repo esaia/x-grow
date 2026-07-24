@@ -1,7 +1,11 @@
 import { browser } from 'wxt/browser';
 import type {
   AuthState,
+  CreatorsResponse,
   GenerateResponse,
+  HarvestRun,
+  IngestPayload,
+  IngestResponse,
   PostPayload,
   RecentPayload,
   RecentResponse,
@@ -18,7 +22,21 @@ export type BgRequest =
   | { type: 'generate:reply'; payload: ReplyPayload }
   | { type: 'generate:post'; payload: PostPayload }
   | { type: 'generate:recent'; payload: RecentPayload }
-  | { type: 'voice:learn'; handle: string | null; posts: string[] };
+  | { type: 'voice:learn'; handle: string | null; posts: string[] }
+  | { type: 'inspiration:ingest'; payload: IngestPayload }
+  | { type: 'inspiration:creators'; fresh?: boolean }
+  | { type: 'harvest:all' }
+  | { type: 'harvest:status' };
+
+// Messages the background sends INTO a content script. Only the content script
+// can touch x.com's DOM, so a background-driven harvest has to ask it to do the
+// reading and hand the result back.
+export type ContentRequest = { type: 'harvest:run'; handle: string };
+
+export interface HarvestResult {
+  payload: IngestPayload;
+  count: number;
+}
 
 export interface LearnResult {
   voice_analysis: string;
@@ -65,4 +83,10 @@ export const bg = {
     send<RecentResponse>({ type: 'generate:recent', payload }),
   learnVoice: (handle: string | null, posts: string[]) =>
     send<LearnResult>({ type: 'voice:learn', handle, posts }),
+  ingestInspiration: (payload: IngestPayload) =>
+    send<IngestResponse>({ type: 'inspiration:ingest', payload }),
+  creators: (fresh = false) =>
+    send<CreatorsResponse>({ type: 'inspiration:creators', fresh }),
+  harvestAll: () => send<HarvestRun>({ type: 'harvest:all' }),
+  harvestStatus: () => send<HarvestRun>({ type: 'harvest:status' }),
 };

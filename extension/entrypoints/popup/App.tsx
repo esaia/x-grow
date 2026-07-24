@@ -2,7 +2,7 @@ import { type FormEvent, useEffect, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { dashboardUrl } from '@/lib/config';
 import { bg } from '@/lib/messaging';
-import type { AuthState } from '@/lib/types';
+import type { AuthState, HarvestRun } from '@/lib/types';
 import './App.css';
 
 function App() {
@@ -12,6 +12,7 @@ function App() {
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [harvest, setHarvest] = useState<HarvestRun | null>(null);
 
   const refresh = async () => {
     const res = await bg.getAuth();
@@ -27,6 +28,31 @@ function App() {
   useEffect(() => {
     refresh();
   }, []);
+
+  // The popup is closed while a run works (the harvest window takes focus), so
+  // this only ever shows a run in progress if the popup was reopened, plus the
+  // outcome of the last one.
+  useEffect(() => {
+    const poll = async () => {
+      const res = await bg.harvestStatus();
+      if (res.ok) setHarvest(res.data);
+    };
+
+    poll();
+    const interval = setInterval(poll, 1500);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const harvestAll = async () => {
+    setError('');
+    const res = await bg.harvestAll();
+    if (res.ok) {
+      setHarvest(res.data);
+    } else {
+      setError(res.error);
+    }
+  };
 
   const connect = async (e: FormEvent) => {
     e.preventDefault();
@@ -107,6 +133,31 @@ function App() {
               History
             </button>
           </div>
+
+          <div className="xg-actions">
+            <button
+              onClick={harvestAll}
+              disabled={harvest?.running}
+              className="xg-ghost"
+            >
+              {harvest?.running
+                ? `Harvesting ${harvest.done + 1}/${harvest.total}…`
+                : 'Harvest all creators'}
+            </button>
+          </div>
+
+          {harvest?.running ? (
+            <p className="xg-hint">
+              A harvest window is open{harvest.current ? ` on @${harvest.current}` : ''}
+              . Leave it alone until it closes — it needs to be visible to load
+              posts.
+            </p>
+          ) : harvest?.finishedAt ? (
+            <p className="xg-hint">
+              Last harvest: {harvest.harvested} posts from {harvest.total}{' '}
+              creators{harvest.error ? ` (${harvest.error})` : ''}.
+            </p>
+          ) : null}
 
           <p className="xg-hint">
             Open <strong>x.com</strong> and use the ✨ buttons on replies and the

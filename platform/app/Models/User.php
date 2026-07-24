@@ -66,6 +66,7 @@ class User extends Authenticatable implements PasskeyUser
         return $this->hasMany(ScheduledPost::class);
     }
 
+    /** @return HasMany<TrackedCreator, $this> */
     public function trackedCreators(): HasMany
     {
         return $this->hasMany(TrackedCreator::class);
@@ -78,8 +79,8 @@ class User extends Authenticatable implements PasskeyUser
     }
 
     /**
-     * The user's first connected X account. Kept for the X-only reading
-     * paths (Inspiration scanning via XReaderService), which need *an*
+     * The user's first connected X account. Kept for the X-only paths
+     * (posting/scheduling a remix straight from Inspiration), which need *an*
      * authorized X token rather than a specific chosen destination.
      *
      * @return HasOne<SocialAccount, $this>

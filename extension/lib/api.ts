@@ -1,5 +1,8 @@
 import type {
+  CreatorsResponse,
   GenerateResponse,
+  IngestPayload,
+  IngestResponse,
   MeResponse,
   PostPayload,
   RecentPayload,
@@ -82,6 +85,23 @@ export function recentGeneration(
   payload: RecentPayload,
 ): Promise<RecentResponse> {
   return apiFetch<RecentResponse>(base, token, '/generate/recent', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+/** The creators this user tracks — who the extension should harvest. */
+export function listCreators(base: string, token: string): Promise<CreatorsResponse> {
+  return apiFetch<CreatorsResponse>(base, token, '/inspiration/creators');
+}
+
+/** Send posts scraped from a creator's profile to the Inspiration board. */
+export function ingestInspiration(
+  base: string,
+  token: string,
+  payload: IngestPayload,
+): Promise<IngestResponse> {
+  return apiFetch<IngestResponse>(base, token, '/inspiration/ingest', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

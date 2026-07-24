@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AccountController;
 use App\Http\Controllers\Api\GenerationController;
+use App\Http\Controllers\Api\InspirationIngestController;
 use App\Http\Controllers\Api\VoiceProfileController;
 use Illuminate\Support\Facades\Route;
 
@@ -19,4 +20,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/generate/reply', [GenerationController::class, 'reply']);
     Route::post('/generate/post', [GenerationController::class, 'post']);
     Route::post('/generate/recent', [GenerationController::class, 'recent']);
+
+    // Posts the extension scraped off a creator's x.com profile.
+    Route::get('/inspiration/creators', [InspirationIngestController::class, 'creators']);
+    Route::post('/inspiration/ingest', [InspirationIngestController::class, 'store']);
 });

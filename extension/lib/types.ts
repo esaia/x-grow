@@ -52,6 +52,54 @@ export interface PostPayload {
   count?: number;
 }
 
+export interface IngestPayload {
+  handle: string;
+  profile: {
+    name: string | null;
+    avatar_url: string | null;
+    followers_count: number | null;
+  };
+  posts: {
+    x_tweet_id: string;
+    content: string;
+    url: string;
+    posted_at: string | null;
+    metrics: { like: number; reply: number; retweet: number; quote: number };
+  }[];
+}
+
+export interface TrackedCreator {
+  username: string;
+  posts_count: number;
+  last_scanned_at: string | null;
+}
+
+export interface CreatorsResponse {
+  creators: TrackedCreator[];
+}
+
+/** Shape of the {ok, data|error} envelope every messaging call replies with. */
+export type BgResponseLike<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string };
+
+/** Progress of a "harvest all" run, polled by the popup. */
+export interface HarvestRun {
+  running: boolean;
+  done: number;
+  total: number;
+  current: string | null;
+  finishedAt: number | null;
+  harvested: number;
+  error: string | null;
+}
+
+export interface IngestResponse {
+  creator: { id: number; username: string; name: string | null };
+  received: number;
+  stored: number;
+}
+
 export interface AuthState {
   connected: boolean;
   apiBaseUrl: string;

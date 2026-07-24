@@ -40,7 +40,6 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('inspiration', [InspirationController::class, 'index'])->name('inspiration.index');
     Route::post('inspiration/creators', [InspirationController::class, 'storeCreator'])->name('inspiration.creators.store');
     Route::delete('inspiration/creators/{creator}', [InspirationController::class, 'destroyCreator'])->name('inspiration.creators.destroy');
-    Route::post('inspiration/scan', [InspirationController::class, 'scan'])->name('inspiration.scan');
     Route::post('inspiration/posts/{post}/use', [InspirationController::class, 'useIdea'])->name('inspiration.use');
     Route::post('inspiration/publish', [InspirationController::class, 'publish'])->name('inspiration.publish');
     Route::post('inspiration/schedule', [InspirationController::class, 'schedule'])->name('inspiration.schedule');

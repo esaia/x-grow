@@ -41,40 +41,40 @@ class InspirationTest extends TestCase
             ->assertOk();
     }
 
-    public function test_adding_a_creator_resolves_the_handle(): void
+    public function test_adding_a_creator_needs_only_a_handle(): void
     {
         $user = User::factory()->create();
-        $this->connectX($user);
-
-        Http::fake([
-            'api.x.com/2/users/by/username/*' => Http::response([
-                'data' => [
-                    'id' => '999',
-                    'username' => 'karpathy',
-                    'name' => 'Andrej',
-                    'profile_image_url' => 'https://x/avatar.jpg',
-                    'public_metrics' => ['followers_count' => 1000000],
-                ],
-            ]),
-        ]);
 
         $this->actingAs($user)
             ->post(route('inspiration.creators.store'), ['handle' => '@karpathy'])
-            ->assertRedirect();
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        // No X API call is made — the extension fills in the profile later.
+        Http::assertNothingSent();
 
         $this->assertDatabaseHas('tracked_creators', [
             'user_id' => $user->id,
-            'x_user_id' => '999',
             'username' => 'karpathy',
         ]);
     }
 
-    public function test_adding_a_creator_requires_a_connected_x_account(): void
+    public function test_adding_the_same_creator_twice_does_not_duplicate(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)->post(route('inspiration.creators.store'), ['handle' => 'karpathy']);
+        $this->actingAs($user)->post(route('inspiration.creators.store'), ['handle' => '@karpathy']);
+
+        $this->assertDatabaseCount('tracked_creators', 1);
+    }
+
+    public function test_adding_a_creator_rejects_a_malformed_handle(): void
     {
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->post(route('inspiration.creators.store'), ['handle' => 'karpathy'])
+            ->post(route('inspiration.creators.store'), ['handle' => 'not a handle!'])
             ->assertSessionHasErrors('handle');
 
         $this->assertDatabaseCount('tracked_creators', 0);

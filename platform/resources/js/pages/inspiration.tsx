@@ -1,6 +1,7 @@
 import { Head, Link, router } from '@inertiajs/react';
 import {
     CalendarClock,
+    ExternalLink,
     Heart,
     MessageCircle,
     Pencil,
@@ -59,8 +60,8 @@ const CLOSENESS_OPTIONS: {
 
 type Creator = {
     id: number;
-    x_user_id: string;
     username: string;
+    posts_count: number;
     name: string | null;
     avatar_url: string | null;
     followers_count: number | null;
@@ -213,7 +214,7 @@ export default function Inspiration({
     const [newHandle, setNewHandle] = useState('');
     const [addingCreator, setAddingCreator] = useState(false);
     const [addError, setAddError] = useState<string | null>(null);
-    const [scanning, setScanning] = useState(false);
+    const [harvestOpen, setHarvestOpen] = useState(false);
     const [creatorFilter, setCreatorFilter] = useState('all');
     const [threshold, setThreshold] = useState('all');
     const [remixPost, setRemixPost] = useState<InspirationPost | null>(null);
@@ -246,20 +247,6 @@ export default function Inspiration({
                 post.creator_id === Number(creatorFilter)) &&
             post.baseline_multiplier >= minMultiplier,
     );
-
-    const updateData = () => {
-        setScanning(true);
-        router.post(
-            '/inspiration/scan',
-            {},
-            {
-                preserveScroll: true,
-                onError: (errors) =>
-                    toast.error(errors.scan ?? 'Could not update data.'),
-                onFinish: () => setScanning(false),
-            },
-        );
-    };
 
     const addCreator = () => {
         const handle = newHandle.trim();
@@ -417,14 +404,9 @@ export default function Inspiration({
                 <div className="flex items-center gap-2">
                     <Button
                         variant="outline"
-                        onClick={updateData}
-                        disabled={scanning}
+                        onClick={() => setHarvestOpen(true)}
                     >
-                        {scanning ? (
-                            <Spinner className="size-4" />
-                        ) : (
-                            <RefreshCw className="size-4" />
-                        )}
+                        <RefreshCw className="size-4" />
                         Update data
                     </Button>
                     <Button onClick={() => setEditingCreators(true)}>
@@ -438,8 +420,8 @@ export default function Inspiration({
                 <Card>
                     <CardContent className="flex flex-wrap items-center justify-between gap-3 py-4">
                         <p className="text-sm text-muted-foreground">
-                            Connect your X account to look up creators and fetch
-                            their viral posts.
+                            Connect your X account to post or schedule remixes
+                            straight from this page.
                         </p>
                         <Button asChild variant="outline" size="sm">
                             <Link href="/connect">Connect X</Link>
@@ -507,9 +489,9 @@ export default function Inspiration({
                         <Sparkles className="size-8 text-muted-foreground" />
                         <p className="text-sm text-muted-foreground">
                             {creators.length === 0
-                                ? 'Add creators to track, then click "Update data" to pull in their viral posts.'
+                                ? 'Add creators to track, then click "Update data" to harvest their posts with the extension.'
                                 : posts.length === 0
-                                  ? 'Click "Update data" to fetch the latest viral posts from your tracked creators.'
+                                  ? 'Click "Update data" to harvest your tracked creators\u2019 posts with the extension.'
                                   : 'No posts match these filters. Try lowering the baseline threshold.'}
                         </p>
                     </CardContent>
@@ -581,14 +563,32 @@ export default function Inspiration({
                                             )}
                                         </span>
                                     </div>
-                                    <Button
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() => openRemix(post)}
-                                    >
-                                        <Sparkles className="size-4" />
-                                        Use this idea
-                                    </Button>
+                                    <div className="flex items-center gap-2">
+                                        {post.url && (
+                                            <Button
+                                                size="sm"
+                                                variant="ghost"
+                                                asChild
+                                            >
+                                                <a
+                                                    href={post.url}
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                >
+                                                    <ExternalLink className="size-4" />
+                                                    View on X
+                                                </a>
+                                            </Button>
+                                        )}
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => openRemix(post)}
+                                        >
+                                            <Sparkles className="size-4" />
+                                            Use this idea
+                                        </Button>
+                                    </div>
                                 </div>
                             </CardContent>
                         </Card>
@@ -597,6 +597,68 @@ export default function Inspiration({
             )}
 
             {/* Edit tracked creators */}
+            {/* Update data — posts are harvested by the extension, on x.com */}
+            <Dialog open={harvestOpen} onOpenChange={setHarvestOpen}>
+                <DialogContent className="sm:max-w-md">
+                    <div className="flex flex-col gap-5">
+                        <div>
+                            <h2 className="text-xl font-bold">Update data</h2>
+                            <p className="text-sm text-muted-foreground">
+                                Posts are read by the X-Grow extension from
+                                pages you have open, so this costs nothing. Open
+                                a creator below and click{' '}
+                                <span className="font-medium">✨ Harvest</span>{' '}
+                                next to their Follow button.
+                            </p>
+                        </div>
+
+                        <div className="flex max-h-80 flex-col gap-2 overflow-y-auto">
+                            {creators.length === 0 ? (
+                                <p className="py-4 text-center text-sm text-muted-foreground">
+                                    No creators tracked yet — add one first.
+                                </p>
+                            ) : (
+                                creators.map((creator) => (
+                                    <a
+                                        key={creator.id}
+                                        href={`https://x.com/${creator.username}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="flex items-center gap-2 rounded-md border p-2 transition-colors hover:bg-accent"
+                                    >
+                                        <Avatar>
+                                            {creator.avatar_url && (
+                                                <AvatarImage
+                                                    src={creator.avatar_url}
+                                                    alt={creator.username}
+                                                />
+                                            )}
+                                            <AvatarFallback>
+                                                {initials(creator)}
+                                            </AvatarFallback>
+                                        </Avatar>
+                                        <div className="min-w-0 flex-1">
+                                            <p className="truncate text-sm font-medium">
+                                                @{creator.username}
+                                            </p>
+                                            <p className="truncate text-xs text-muted-foreground">
+                                                {creator.posts_count > 0
+                                                    ? `${creator.posts_count} posts`
+                                                    : 'Never harvested'}
+                                                {creator.last_scanned_at &&
+                                                    now !== null &&
+                                                    ` · ${relativeTime(creator.last_scanned_at, now)}`}
+                                            </p>
+                                        </div>
+                                        <ExternalLink className="size-4 shrink-0 text-muted-foreground" />
+                                    </a>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
             <Dialog open={editingCreators} onOpenChange={setEditingCreators}>
                 <DialogContent className="sm:max-w-md">
                     <div className="flex flex-col gap-5">
@@ -624,14 +686,11 @@ export default function Inspiration({
                                             addCreator();
                                         }
                                     }}
-                                    disabled={!hasXAccount}
                                 />
                                 <Button
                                     onClick={addCreator}
                                     disabled={
-                                        addingCreator ||
-                                        !hasXAccount ||
-                                        !newHandle.trim()
+                                        addingCreator || !newHandle.trim()
                                     }
                                 >
                                     {addingCreator ? (
@@ -645,12 +704,6 @@ export default function Inspiration({
                             {addError && (
                                 <p className="text-sm text-destructive">
                                     {addError}
-                                </p>
-                            )}
-                            {!hasXAccount && (
-                                <p className="text-sm text-muted-foreground">
-                                    Connect your X account first to add
-                                    creators.
                                 </p>
                             )}
                         </div>
