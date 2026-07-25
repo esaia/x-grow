@@ -14,6 +14,20 @@ use RuntimeException;
 
 class GenerationController extends Controller
 {
+    /**
+     * Sampling that keeps the options from collapsing into the same phrasing.
+     * The penalties matter most for replies: all options come back from a
+     * single call, so without them the model reuses one template for every
+     * option — and the more options are asked for, the more obvious that gets.
+     *
+     * @var array<string, mixed>
+     */
+    private const HUMAN_SAMPLING = [
+        'temperature' => 1.0,
+        'presence_penalty' => 0.5,
+        'frequency_penalty' => 0.3,
+    ];
+
     public function __construct(
         private readonly ClaudeService $claude,
         private readonly PromptBuilder $prompts,
@@ -38,7 +52,7 @@ class GenerationController extends Controller
         return $this->run($user, Generation::TYPE_REPLY, $data['tweet'], [
             'tone' => $data['tone'] ?? null,
             'has_thread' => filled($data['thread_context'] ?? null),
-        ], $system, $prompt, $count);
+        ], $system, $prompt, $count, 1536, self::HUMAN_SAMPLING);
     }
 
     /**
@@ -60,7 +74,7 @@ class GenerationController extends Controller
         return $this->run($user, Generation::TYPE_POST, $data['topic'], [
             'tone' => $data['tone'] ?? null,
             'format' => $format,
-        ], $system, $prompt, $count, $maxTokens);
+        ], $system, $prompt, $count, $maxTokens, self::HUMAN_SAMPLING);
     }
 
     /**
@@ -97,6 +111,7 @@ class GenerationController extends Controller
      * Shared: call OpenAI, persist the generation, and shape the JSON response.
      *
      * @param  array<string, mixed>  $meta
+     * @param  array<string, mixed>  $params
      */
     private function run(
         $user,
@@ -107,9 +122,10 @@ class GenerationController extends Controller
         string $prompt,
         int $count,
         int $maxTokens = 1024,
+        array $params = [],
     ): JsonResponse {
         try {
-            $result = $this->claude->generateOptions($system, $prompt, $count, $maxTokens);
+            $result = $this->claude->generateOptions($system, $prompt, $count, $maxTokens, $params);
         } catch (RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 502);
         }

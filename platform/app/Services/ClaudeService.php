@@ -29,9 +29,12 @@ class ClaudeService
     /**
      * Send a single-turn message.
      *
+     * @param  array<string, mixed>  $params  Extra Chat Completions params (e.g. temperature,
+     *                                        presence_penalty). Left empty by default so
+     *                                        reasoning models that reject them still work.
      * @return array{text: string, input_tokens: int, output_tokens: int, model: string}
      */
-    public function message(string $system, string $prompt, int $maxTokens = 1024): array
+    public function message(string $system, string $prompt, int $maxTokens = 1024, array $params = []): array
     {
         if ($this->apiKey === '') {
             throw new RuntimeException('OPENAI_API_KEY is not set. Add it to platform/.env.');
@@ -40,6 +43,7 @@ class ClaudeService
         $response = Http::withToken($this->apiKey)
             ->timeout(170)
             ->post($this->baseUrl.'/v1/chat/completions', [
+                ...$params,
                 'model' => $this->model,
                 'max_completion_tokens' => $maxTokens,
                 'messages' => [
@@ -67,15 +71,16 @@ class ClaudeService
     /**
      * Ask the model for a set of distinct options, returned as an array of strings.
      *
+     * @param  array<string, mixed>  $params  Extra Chat Completions params.
      * @return array{options: array<int, string>, input_tokens: int, output_tokens: int, model: string}
      */
-    public function generateOptions(string $system, string $prompt, int $count = 3, int $maxTokens = 1024): array
+    public function generateOptions(string $system, string $prompt, int $count = 3, int $maxTokens = 1024, array $params = []): array
     {
         $instruction = $prompt."\n\n"
             ."Return ONLY a JSON object of the exact form {\"options\": [\"...\"]} containing exactly {$count} "
             .'distinct options as strings. Do not include any commentary, keys, or text outside the JSON.';
 
-        $result = $this->message($system, $instruction, $maxTokens);
+        $result = $this->message($system, $instruction, $maxTokens, $params);
 
         return [
             'options' => array_map(

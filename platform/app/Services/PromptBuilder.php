@@ -53,6 +53,10 @@ class PromptBuilder
                 .'"game-changer", "seamless", "elevate", "in today\'s world", "at the end of the day".',
             '- Don\'t end every post with a rhetorical question — vary how posts close.',
             '- Vary sentence length. Short fragments are fine. Lowercase is fine if the samples use it.',
+            '- Don\'t compliment, validate, or congratulate before making your point. Say the thing.',
+            '- Don\'t hedge with "might", "perhaps", "in some ways". Commit to the sentence.',
+            '- No tidy symmetry: avoid perfectly balanced two-part sentences and matching triples.',
+            '- Leave it slightly rough. Real posts have fragments and abrupt endings; polished is a tell.',
             '',
             'Use simple, easy English:',
             '- Prefer short, everyday words over fancy or academic ones (e.g. "use" not "utilize", "help" not '
@@ -155,13 +159,52 @@ class PromptBuilder
             .'with the project, keep the chosen tone, and do not give generic advice or a contrarian take instead. '
             .'If the profile lists more than one project/link, pick the one most relevant to the tweet.';
 
-        $parts[] = 'Otherwise (a normal tweet), write short replies that add value or a sharp point of view and '
-            .'invite engagement.';
-
-        $parts[] = 'Every reply must be a standalone tweet under 280 characters, sound like the owner, not restate '
-            .'the original tweet, and never start with "Great point" or similar filler.';
+        $parts[] = $this->replyCraftGuidance();
 
         return implode("\n\n", $parts);
+    }
+
+    /**
+     * The anti-"AI reply guy" rules. Left to itself the model writes the same
+     * reply every time: a compliment, then a polite follow-up question. These
+     * rules force each option into a genuinely different shape, kill the
+     * validation-then-question template, and push replies down to the length a
+     * real person actually types in a timeline.
+     */
+    private function replyCraftGuidance(): string
+    {
+        return "Otherwise (a normal tweet), reply the way a real person scrolling their timeline would.\n\n"
+            ."Pick a DIFFERENT one of these shapes for each option — never two options of the same shape:\n"
+            ."- A joke or dry riff on one specific detail of the tweet.\n"
+            ."- A short reaction that shows you actually read it: one blunt line, no question.\n"
+            ."- A related observation or angle the tweet didn't mention.\n"
+            ."- Friendly pushback: name the part you'd disagree with or complicate.\n"
+            ."- Something the owner has actually lived (only using facts from their profile), told in one line.\n"
+            .'- A genuinely specific question — but at most ONE option may be a question, and it must ask about '
+            ."something concrete in the tweet, not a generic \"what's next for you?\".\n\n"
+            .'Length: most replies are 3 to 15 words. One option may be longer, but only if the extra words '
+            ."earn it. If a reply reads like a paragraph, it's wrong.\n\n"
+            ."Never do these — they are what makes a reply read as AI:\n"
+            ."- Opening with a compliment or validation: \"impressive\", \"love this\", \"that's a strong X\", "
+            ."\"great work\", \"so true\", \"this is gold\", \"well said\", \"congrats\", \"nice\".\n"
+            .'- The compliment-then-question combo ("nice work! how did you..."). It is the single most '
+            ."obvious AI tell.\n"
+            ."- \"curious how/what...\", \"have any ... in mind?\", \"what's your take?\", \"any tips?\", "
+            ."\"thanks for sharing\", \"as someone who...\".\n"
+            ."- Restating or summarising the tweet back at the person.\n"
+            ."- Giving unsolicited advice or a lesson when the tweet was just someone sharing their day.\n"
+            ."- Ending every option with a question mark.\n\n"
+            .'Match the register of the tweet: a casual one-line personal post gets a casual one-line reply, not '
+            ."analysis. A serious or technical tweet can carry a real point.\n\n"
+            .'Calibration, for shape only — never reuse this wording. For the tweet "I just hit my plank hold '
+            ."PR: 7 minutes\":\n"
+            ."- BAD: \"impressive! curious how you progressively improved your plank time?\"\n"
+            ."- BAD: \"that's a strong core you've got there. have any other fitness goals in mind?\"\n"
+            ."- GOOD: \"7 minutes is longer than most people can sit still without their phone\"\n"
+            ."- GOOD: \"i tap out at 90 seconds and start negotiating with myself\"\n"
+            ."- GOOD: \"planks are the only exercise where doing nothing is the hard part\"\n\n"
+            .'Every reply must be a standalone tweet under 280 characters and sound like the owner typed it on '
+            .'their phone in five seconds.';
     }
 
     /**
