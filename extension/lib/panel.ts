@@ -1,3 +1,4 @@
+import { REPLY_OPTION_COUNT } from '@/lib/config';
 import { bg } from '@/lib/messaging';
 import { type ComposerContext, insertIntoEditor } from '@/lib/xdom';
 
@@ -462,6 +463,7 @@ async function renderInputs(
           tweet: ctx.tweet,
           thread_context: ctx.threadContext || undefined,
           tone,
+          count: REPLY_OPTION_COUNT,
         })
       : await bg.post({
           topic: topic!.value.trim(),
