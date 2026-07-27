@@ -18,6 +18,13 @@ use RuntimeException;
 
 class InspirationController extends Controller
 {
+    /**
+     * Date filters offered on the Inspiration page. Numeric values mean "the
+     * last N calendar days, today included". Kept in sync with the frontend's
+     * DATE_RANGES in resources/js/pages/inspiration.tsx.
+     */
+    public const DATE_RANGES = ['all', 'today', 'yesterday', '2', '3', '7', '30'];
+
     public function __construct(
         private readonly ClaudeService $claude,
         private readonly PromptBuilder $prompts,
@@ -31,6 +38,13 @@ class InspirationController extends Controller
     public function index(Request $request): Response
     {
         $user = $request->user();
+
+        $filters = $request->validate([
+            'range' => ['nullable', 'string', 'in:'.implode(',', self::DATE_RANGES)],
+            'timezone' => ['nullable', 'string', 'timezone'],
+        ]);
+
+        $range = $filters['range'] ?? 'all';
 
         $creators = $user->trackedCreators()
             ->withCount('inspirationPosts')
@@ -46,9 +60,16 @@ class InspirationController extends Controller
                 'last_scanned_at' => $creator->last_scanned_at?->toIso8601String(),
             ]);
 
+        [$from, $to] = $this->dateWindow($range, $filters['timezone'] ?? config('app.timezone'));
+
         $posts = InspirationPost::query()
             ->whereIn('tracked_creator_id', $user->trackedCreators()->select('id'))
             ->with('creator')
+            // Filter in the query, not in the browser: only the top 300 posts by
+            // multiplier are sent, so a client-side date filter would silently
+            // drop matching-but-lower-ranked posts.
+            ->when($from, fn ($query) => $query->where('posted_at', '>=', $from))
+            ->when($to, fn ($query) => $query->where('posted_at', '<', $to))
             ->orderByDesc('baseline_multiplier')
             ->limit(300)
             ->get()
@@ -68,8 +89,31 @@ class InspirationController extends Controller
         return Inertia::render('inspiration', [
             'creators' => $creators,
             'posts' => $posts,
+            'range' => $range,
             'hasXAccount' => $user->xAccount()->exists(),
         ]);
+    }
+
+    /**
+     * Resolve a date filter into a [from, to) window of real instants.
+     * `posted_at` is stored in UTC, but the day boundaries are the ones the
+     * user sees, so they are computed in their timezone and then converted.
+     *
+     * @return array{0: ?Carbon, 1: ?Carbon}
+     */
+    private function dateWindow(string $range, string $timezone): array
+    {
+        if ($range === 'all') {
+            return [null, null];
+        }
+
+        $today = Carbon::now($timezone)->startOfDay();
+
+        return match ($range) {
+            'today' => [$today->copy()->utc(), null],
+            'yesterday' => [$today->copy()->subDay()->utc(), $today->copy()->utc()],
+            default => [$today->copy()->subDays((int) $range - 1)->utc(), null],
+        };
     }
 
     /**

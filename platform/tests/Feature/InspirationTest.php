@@ -41,6 +41,56 @@ class InspirationTest extends TestCase
             ->assertOk();
     }
 
+    public function test_date_range_filters_posts_by_the_users_calendar_days(): void
+    {
+        // Frozen so "today" in Asia/Tbilisi (UTC+4) is unambiguous whatever hour
+        // the suite happens to run at.
+        $this->travelTo('2026-07-27 09:00:00');
+
+        $user = User::factory()->create();
+        $creator = $user->trackedCreators()->create([
+            'x_user_id' => '999',
+            'username' => 'karpathy',
+        ]);
+
+        // Times are chosen so the Tbilisi (UTC+4) day boundaries differ from UTC's.
+        foreach ([
+            'today' => now()->startOfDay()->addHours(6),
+            'yesterday' => now()->subDay()->startOfDay()->addHours(6),
+            'old' => now()->subDays(10),
+        ] as $label => $postedAt) {
+            $creator->inspirationPosts()->create([
+                'x_tweet_id' => $label,
+                'content' => $label,
+                'metrics' => ['like' => 100, 'reply' => 10, 'retweet' => 5, 'quote' => 1],
+                'baseline_multiplier' => 2,
+                'posted_at' => $postedAt,
+            ]);
+        }
+
+        $contents = fn (string $range): array => collect(
+            $this->actingAs($user)
+                ->get(route('inspiration.index', ['range' => $range, 'timezone' => 'Asia/Tbilisi']))
+                ->assertOk()
+                ->viewData('page')['props']['posts']
+        )->pluck('content')->sort()->values()->all();
+
+        $this->assertSame(['today'], $contents('today'));
+        $this->assertSame(['yesterday'], $contents('yesterday'));
+        $this->assertSame(['today', 'yesterday'], $contents('2'));
+        $this->assertSame(['old', 'today', 'yesterday'], $contents('30'));
+        $this->assertSame(['old', 'today', 'yesterday'], $contents('all'));
+    }
+
+    public function test_date_range_rejects_an_unknown_value(): void
+    {
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->get(route('inspiration.index', ['range' => 'last-week']))
+            ->assertSessionHasErrors('range');
+    }
+
     public function test_adding_a_creator_needs_only_a_handle(): void
     {
         $user = User::factory()->create();

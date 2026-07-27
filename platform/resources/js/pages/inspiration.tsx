@@ -110,6 +110,17 @@ const baselineColor = (multiplier: number): string => {
     return 'bg-muted text-muted-foreground';
 };
 
+// Date filters — kept in sync with InspirationController::DATE_RANGES.
+const DATE_RANGES = [
+    { value: 'all', label: 'Any time' },
+    { value: 'today', label: 'Today' },
+    { value: 'yesterday', label: 'Yesterday' },
+    { value: '2', label: 'Last 2 days' },
+    { value: '3', label: 'Last 3 days' },
+    { value: '7', label: 'Last 7 days' },
+    { value: '30', label: 'Last 30 days' },
+];
+
 const THRESHOLDS = [
     { value: 'all', label: 'All' },
     { value: '1.5', label: '≥1.5x' },
@@ -203,13 +214,16 @@ const buildTodaySlots = (nowMs: number): Slot[] => {
 export default function Inspiration({
     creators,
     posts,
+    range,
     hasXAccount,
 }: {
     creators: Creator[];
     posts: InspirationPost[];
+    range: string;
     hasXAccount: boolean;
 }) {
     const [now, setNow] = useState<number | null>(null);
+    const [loadingPosts, setLoadingPosts] = useState(false);
     const [editingCreators, setEditingCreators] = useState(false);
     const [newHandle, setNewHandle] = useState('');
     const [addingCreator, setAddingCreator] = useState(false);
@@ -247,6 +261,25 @@ export default function Inspiration({
                 post.creator_id === Number(creatorFilter)) &&
             post.baseline_multiplier >= minMultiplier,
     );
+
+    // The date filter runs server-side (only the top 300 posts are sent), so
+    // changing it reloads just the posts prop.
+    const changeRange = (value: string) => {
+        router.get(
+            '/inspiration',
+            value === 'all'
+                ? {}
+                : { range: value, timezone: browserTimezone() },
+            {
+                only: ['posts', 'range'],
+                preserveState: true,
+                preserveScroll: true,
+                replace: true,
+                onStart: () => setLoadingPosts(true),
+                onFinish: () => setLoadingPosts(false),
+            },
+        );
+    };
 
     const addCreator = () => {
         const handle = newHandle.trim();
@@ -430,8 +463,23 @@ export default function Inspiration({
                 </Card>
             )}
 
-            {posts.length > 0 && (
+            {(posts.length > 0 || range !== 'all') && (
                 <div className="flex flex-wrap items-center gap-3">
+                    <Select value={range} onValueChange={changeRange}>
+                        <SelectTrigger className="w-44">
+                            <SelectValue placeholder="Any time" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {DATE_RANGES.map((option) => (
+                                <SelectItem
+                                    key={option.value}
+                                    value={option.value}
+                                >
+                                    {option.label}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
                     <Select
                         value={creatorFilter}
                         onValueChange={setCreatorFilter}
@@ -480,6 +528,7 @@ export default function Inspiration({
                             </ToggleGroupItem>
                         ))}
                     </ToggleGroup>
+                    {loadingPosts && <Spinner className="size-4" />}
                 </div>
             )}
 
@@ -490,9 +539,9 @@ export default function Inspiration({
                         <p className="text-sm text-muted-foreground">
                             {creators.length === 0
                                 ? 'Add creators to track, then click "Update data" to harvest their posts with the extension.'
-                                : posts.length === 0
+                                : posts.length === 0 && range === 'all'
                                   ? 'Click "Update data" to harvest your tracked creators\u2019 posts with the extension.'
-                                  : 'No posts match these filters. Try lowering the baseline threshold.'}
+                                  : 'No posts match these filters. Try a wider date range or a lower baseline threshold.'}
                         </p>
                     </CardContent>
                 </Card>
