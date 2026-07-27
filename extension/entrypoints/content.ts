@@ -53,7 +53,7 @@ function makeButton(toolbar: HTMLElement): HTMLButtonElement {
 
     const ctx = readComposerContext(toolbar);
     if (!ctx) return;
-    openPanel(button, ctx);
+    openPanel(ctx);
   });
 
   return button;

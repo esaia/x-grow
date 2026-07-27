@@ -14,13 +14,40 @@ const FALLBACK_TONES = [
 const FORMATS = ['single', 'hook', 'thread'] as const;
 
 let openHost: HTMLElement | null = null;
+let openOverlay: HTMLElement | null = null;
 let cleanup: (() => void) | null = null;
+// The footer's primary button for the state currently on screen, so ⌘/Ctrl+Enter
+// can trigger it from anywhere in the modal.
+let primary: HTMLButtonElement | null = null;
 
-function closePanel() {
+// Keep in sync with the .xg-overlay/.xg-panel transition durations below.
+const EXIT_MS = 130;
+
+// The two slots every state renders into: the scrolling body and the pinned footer.
+type PanelUI = { body: HTMLElement; foot: HTMLElement };
+
+// Plays the fade-out first, then detaches. `immediate` skips it — used when a
+// new panel is about to replace this one, so the two never overlap.
+function closePanel(immediate = false) {
   cleanup?.();
   cleanup = null;
-  openHost?.remove();
+  primary = null;
+
+  const host = openHost;
+  const overlay = openOverlay;
   openHost = null;
+  openOverlay = null;
+  if (!host) return;
+
+  if (immediate || !overlay) {
+    host.remove();
+    return;
+  }
+
+  // Stop it swallowing clicks while it fades away.
+  overlay.classList.remove('is-open');
+  overlay.classList.add('is-closing');
+  setTimeout(() => host.remove(), EXIT_MS);
 }
 
 // Tiny hyperscript helper.
@@ -54,30 +81,49 @@ function microLabel(text: string): HTMLElement {
   return h('div', { class: 'xg-label', textContent: text });
 }
 
-function field(label: string, control: Node): HTMLElement {
-  return h('div', { class: 'xg-field' }, microLabel(label), control);
+function field(label: string, control: Node, cls = ''): HTMLElement {
+  return h('div', { class: 'xg-field' + (cls ? ` ${cls}` : '') }, microLabel(label), control);
 }
 
 // The conversation the reply lands in: the original post (and any intermediate
 // tweets) followed by the immediate comment. Showing the whole thread — not
 // only the comment — makes clear the AI has the post as context too.
+// Long posts are line-clamped rather than cropped to a pixel height, so the
+// last visible line is never sliced in half; the toggle below reveals the rest
+// (and only appears when something is actually hidden).
 function replyContext(ctx: ComposerContext): HTMLElement {
   const tweets = ctx.contextTweets.length ? ctx.contextTweets : [ctx.tweet];
-  const wrap = h('div', { class: 'xg-context' });
+  const quotes = h('div', { class: 'xg-context' });
   tweets.forEach((text, i) => {
     const last = i === tweets.length - 1;
     if (tweets.length > 1) {
-      wrap.append(h('div', {
+      quotes.append(h('div', {
         class: 'xg-context-role',
         textContent: last ? 'Comment' : i === 0 ? 'Original post' : 'Earlier reply',
       }));
     }
-    wrap.append(h('div', {
+    quotes.append(h('div', {
       class: 'xg-quote' + (last ? '' : ' is-parent'),
       textContent: text,
     }));
   });
-  return wrap;
+
+  const toggle = h('button', { class: 'xg-more', type: 'button', textContent: 'Show more' });
+  toggle.hidden = true;
+  toggle.addEventListener('click', () => {
+    const expanded = quotes.classList.toggle('is-expanded');
+    toggle.textContent = expanded ? 'Show less' : 'Show more';
+  });
+
+  // Measured after layout — scrollHeight is meaningless until the panel is laid out.
+  requestAnimationFrame(() => {
+    const clipped = [...quotes.querySelectorAll('.xg-quote')].some(
+      (q) => q.scrollHeight > q.clientHeight + 1,
+    );
+    toggle.hidden = !clipped;
+  });
+
+  return h('div', { class: 'xg-context-wrap' }, quotes, toggle);
 }
 
 // A row of single-select pill chips. Returns the element + a current-value getter.
@@ -140,6 +186,18 @@ const STYLE = `
 :host { all: initial; }
 * { box-sizing: border-box; font-family: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif; }
 
+.xg-overlay {
+  position: fixed; inset: 0; z-index: 2147483647;
+  display: flex; align-items: center; justify-content: center;
+  padding: 32px 16px;
+  background: rgba(6,5,10,.62);
+  backdrop-filter: blur(3px);
+  opacity: 0;
+  transition: opacity .16s ease-out;
+}
+.xg-overlay.is-open { opacity: 1; }
+.xg-overlay.is-closing { opacity: 0; pointer-events: none; transition-duration: .13s; }
+
 .xg-panel {
   --ink: #100F14;
   --raise: #1A1822;
@@ -151,20 +209,33 @@ const STYLE = `
   --amber-2: #EA9A38;
   --danger: #FF7A6B;
 
-  position: relative; z-index: 2147483647;
-  width: 384px; max-width: calc(100vw - 24px);
+  position: relative;
+  width: 100%; max-width: 560px;
+  max-height: 100%; min-height: 0;
   background: var(--ink); color: var(--text);
   border: 1px solid var(--line); border-radius: 18px;
   box-shadow: 0 24px 64px -16px rgba(0,0,0,.7), 0 2px 8px rgba(0,0,0,.4);
   overflow: hidden; font-size: 14px;
   display: flex; flex-direction: column;
-  animation: xg-in .14s ease-out;
+  opacity: 0; transform: translateY(10px) scale(.98);
+  transition: opacity .16s ease-out, transform .18s cubic-bezier(.2,.8,.25,1);
 }
-@keyframes xg-in { from { opacity: 0; transform: translateY(5px) scale(.99); } to { opacity: 1; transform: none; } }
+.xg-overlay.is-open .xg-panel { opacity: 1; transform: none; }
+.xg-overlay.is-closing .xg-panel {
+  opacity: 0; transform: translateY(6px) scale(.985);
+  transition-duration: .13s;
+}
+@keyframes xg-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 
 .xg-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 13px 15px; border-bottom: 1px solid rgba(255,255,255,.06);
+  flex: 0 0 auto;
+}
+.xg-head-acts { display: flex; align-items: center; gap: 8px; }
+.xg-esc {
+  font-family: ui-monospace, "SF Mono", monospace; font-size: 10.5px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 7px; padding: 3px 7px; line-height: 1;
 }
 .xg-brand { display: flex; align-items: center; gap: 8px; }
 .xg-spark { display: inline-flex; color: var(--amber); filter: drop-shadow(0 0 7px rgba(246,180,76,.5)); }
@@ -189,7 +260,31 @@ const STYLE = `
   color: var(--muted); margin-bottom: 9px;
 }
 
-.xg-context { display: flex; flex-direction: column; gap: 8px; }
+/* The post being replied to stays pinned while the options scroll under it —
+   once results render, the inputs are otherwise scrolled off the top and you
+   lose sight of what the replies are answering. Negative margins let it span
+   the body's padding so scrolled content never peeks through the gap. */
+.xg-sticky {
+  position: sticky; top: 0; z-index: 2;
+  margin: -15px -15px 0; padding: 15px 15px 13px;
+  background: var(--ink);
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+
+.xg-context-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
+.xg-context { display: flex; flex-direction: column; gap: 8px; align-self: stretch; }
+/* Expanded posts can be long — cap the pinned block and let it scroll rather
+   than pushing the replies off screen. */
+.xg-context.is-expanded { max-height: 220px; overflow-y: auto; padding-right: 4px;
+  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent; }
+.xg-more {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  font-size: 12px; font-weight: 600; color: var(--amber);
+  padding: 2px 0; margin-left: 14px;
+}
+.xg-more:hover { text-decoration: underline; }
+.xg-more:focus-visible { box-shadow: 0 0 0 3px rgba(246,180,76,.3); border-radius: 6px; }
+
 .xg-context-role {
   font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase;
   color: var(--muted); margin-bottom: -4px;
@@ -197,12 +292,14 @@ const STYLE = `
 .xg-quote {
   font-size: 13px; line-height: 1.5; color: #C9C3D2;
   border-left: 2px solid var(--amber); padding: 1px 0 1px 12px;
-  max-height: 66px; overflow: hidden;
+  overflow: hidden; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
 }
 .xg-quote.is-parent {
   color: var(--muted); border-left-color: var(--line);
-  max-height: 48px;
+  -webkit-line-clamp: 2;
 }
+.xg-context.is-expanded .xg-quote { -webkit-line-clamp: unset; }
 
 .xg-input {
   width: 100%; font: inherit; font-size: 14px; color: var(--text);
@@ -228,9 +325,19 @@ const STYLE = `
 }
 .xg-chip:focus-visible { box-shadow: 0 0 0 3px rgba(246,180,76,.3); }
 
+.xg-foot {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 15px; border-top: 1px solid rgba(255,255,255,.06);
+  background: rgba(255,255,255,.015);
+}
+.xg-foot:empty { display: none; }
+.xg-hint {
+  font-family: ui-monospace, "SF Mono", monospace; font-size: 11px; color: var(--muted);
+}
+
 .xg-generate {
   all: unset; box-sizing: border-box; cursor: pointer; text-align: center;
-  width: 100%; padding: 12px; border-radius: 12px;
+  margin-left: auto; padding: 11px 22px; border-radius: 12px;
   font-weight: 700; font-size: 14.5px; letter-spacing: -.01em; color: #1C1206;
   background: linear-gradient(180deg, var(--amber), var(--amber-2));
   box-shadow: 0 8px 20px -8px rgba(246,180,76,.55);
@@ -240,6 +347,12 @@ const STYLE = `
 .xg-generate:active { transform: translateY(1px); }
 .xg-generate:focus-visible { box-shadow: 0 0 0 3px rgba(246,180,76,.35); }
 .xg-generate:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+
+.xg-output:empty { display: none; }
+.xg-output:not(:empty) {
+  border-top: 1px dashed var(--line); padding-top: 15px;
+  animation: xg-in .16s ease-out;
+}
 
 .xg-recent {
   border-top: 1px dashed var(--line); padding-top: 15px;
@@ -276,7 +389,7 @@ const STYLE = `
 
 .xg-regen {
   all: unset; box-sizing: border-box; cursor: pointer; text-align: center;
-  width: 100%; padding: 10px; border-radius: 11px; font-size: 13px; font-weight: 600;
+  margin-left: auto; padding: 10px 20px; border-radius: 11px; font-size: 13px; font-weight: 600;
   color: var(--muted); border: 1px solid var(--line);
 }
 .xg-regen:hover { color: var(--text); background: var(--raise); }
@@ -294,13 +407,15 @@ const STYLE = `
 @keyframes xg-bounce { 0%,60%,100% { transform: translateY(0); opacity: .45; } 30% { transform: translateY(-5px); opacity: 1; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .xg-panel { animation: none; }
+  .xg-overlay, .xg-panel { transition: none; }
+  .xg-panel { transform: none; }
+  .xg-recent { animation: none; }
   .xg-dots i { animation: none; }
 }
 `;
 
-export function openPanel(anchor: HTMLElement, ctx: ComposerContext): void {
-  closePanel();
+export function openPanel(ctx: ComposerContext): void {
+  closePanel(true);
 
   const host = document.createElement('div');
   host.setAttribute('data-xgrow-panel', '');
@@ -311,9 +426,11 @@ export function openPanel(anchor: HTMLElement, ctx: ComposerContext): void {
 
   const isReply = ctx.mode === 'reply';
   const body = h('div', { class: 'xg-body' });
+  const foot = h('div', { class: 'xg-foot' });
 
   const closeBtn = h('button', { class: 'xg-x', type: 'button', textContent: '✕', title: 'Close' });
-  closeBtn.addEventListener('click', closePanel);
+  // Wrapped: passing the listener directly would hand the event to `immediate`.
+  closeBtn.addEventListener('click', () => closePanel());
 
   const panel = h(
     'div',
@@ -325,86 +442,71 @@ export function openPanel(anchor: HTMLElement, ctx: ComposerContext): void {
         class: 'xg-title',
         textContent: isReply ? 'AI reply' : 'AI post',
       })),
-      closeBtn,
+      h('div', { class: 'xg-head-acts' },
+        h('span', { class: 'xg-esc', textContent: 'esc' }), closeBtn),
     ),
     body,
+    foot,
   );
-  shadow.append(panel);
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
 
-  // Render in the top layer (no clipping) and keep the panel glued to the
-  // button by re-tracking its position on every scroll/resize. This behaves
-  // like an anchored popover: it moves *with* the button, so there's never a
-  // gap, regardless of which of X's containers actually scrolls.
+  // A full-viewport overlay in the top layer: centred, never clipped by X's
+  // containers, and unaffected by scrolling — so there's no position to track.
+  const overlay = h('div', { class: 'xg-overlay' }, panel);
+  openOverlay = overlay;
+  shadow.append(overlay);
   document.body.appendChild(host);
-  host.style.position = 'fixed';
-  host.style.zIndex = '2147483647';
 
-  // Keep clicks inside the panel from leaking into X's composer handlers.
+  // Flip to the open state a frame later so the entry transition actually runs.
+  requestAnimationFrame(() => overlay.classList.add('is-open'));
+
+  // Keep clicks inside the modal from leaking into X's composer handlers.
   host.addEventListener('mousedown', (e) => e.stopPropagation());
   host.addEventListener('click', (e) => e.stopPropagation());
 
-  const margin = 12;
-  const reposition = () => {
-    // If the composer (and its button) is gone from the page, close.
-    if (!anchor.isConnected) {
+  // Dismiss on backdrop click / Escape; ⌘↵ fires the footer's primary action.
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target === overlay) closePanel();
+  });
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
       closePanel();
       return;
     }
-    const aRect = anchor.getBoundingClientRect();
-    const leftVp = Math.max(margin, Math.min(aRect.left, window.innerWidth - 384 - margin));
-    host.style.left = `${leftVp}px`;
-
-    const spaceBelow = window.innerHeight - aRect.bottom - margin;
-    const spaceAbove = aRect.top - margin;
-    const placeBelow = spaceBelow >= 320 || spaceBelow >= spaceAbove;
-    panel.style.maxHeight = `${Math.max(200, placeBelow ? spaceBelow : spaceAbove)}px`;
-
-    if (placeBelow) {
-      host.style.top = `${aRect.bottom + 8}px`;
-    } else {
-      host.style.top = `${aRect.top - host.offsetHeight - 8}px`;
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && primary && !primary.disabled) {
+      e.preventDefault();
+      primary.click();
     }
   };
-  reposition();
-
-  // Track scroll (capture:true also catches X's inner scroll containers) + resize.
-  let rafId = 0;
-  const onMove = () => {
-    if (rafId) return;
-    rafId = requestAnimationFrame(() => {
-      rafId = 0;
-      reposition();
-    });
-  };
-  window.addEventListener('scroll', onMove, { capture: true, passive: true });
-  window.addEventListener('resize', onMove);
-
-  // Dismiss on outside click / Escape.
-  const onDocClick = (e: MouseEvent) => {
-    if (!host.contains(e.target as Node)) closePanel();
-  };
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') closePanel();
-  };
-  setTimeout(() => document.addEventListener('click', onDocClick), 0);
+  // Shadow-DOM keydowns are composed, so they reach this document listener too.
   document.addEventListener('keydown', onKey);
   cleanup = () => {
-    if (rafId) cancelAnimationFrame(rafId);
-    window.removeEventListener('scroll', onMove, { capture: true } as EventListenerOptions);
-    window.removeEventListener('resize', onMove);
-    document.removeEventListener('click', onDocClick);
     document.removeEventListener('keydown', onKey);
   };
 
-  renderInputs(body, ctx, isReply);
+  renderInputs({ body, foot }, ctx, isReply);
+}
+
+// Put a state's primary action in the footer (with an optional left-hand hint)
+// and register it as the ⌘↵ target.
+function setFooter(foot: HTMLElement, button: HTMLButtonElement, hint?: string) {
+  primary = button;
+  foot.replaceChildren(
+    ...(hint ? [h('span', { class: 'xg-hint', textContent: hint })] : []),
+    button,
+  );
 }
 
 async function renderInputs(
-  body: HTMLElement,
+  ui: PanelUI,
   ctx: ComposerContext,
   isReply: boolean,
 ) {
+  const { body, foot } = ui;
   body.replaceChildren(loading('Loading your voice…'));
+  foot.replaceChildren();
+  primary = null;
 
   const auth = await bg.getAuth();
   if (!auth.ok) {
@@ -430,7 +532,7 @@ async function renderInputs(
   const controls: HTMLElement[] = [];
 
   if (isReply) {
-    controls.push(field('Replying to', replyContext(ctx)));
+    controls.push(field('Replying to', replyContext(ctx), 'xg-sticky'));
     controls.push(field('Tone', toneGroup.el));
   } else {
     topic = h('textarea', {
@@ -446,16 +548,30 @@ async function renderInputs(
   const generate = h('button', {
     class: 'xg-generate',
     type: 'button',
-    textContent: isReply ? 'Write 3 replies' : 'Write 3 posts',
+    // Posts don't pass a count, so the API's default of 3 applies to them.
+    textContent: isReply ? `Write ${REPLY_OPTION_COUNT} replies` : 'Write 3 posts',
   });
 
-  generate.addEventListener('click', async () => {
+  const regen = h('button', { class: 'xg-regen', type: 'button', textContent: 'Regenerate' });
+  const retry = h('button', { class: 'xg-regen', type: 'button', textContent: 'Try again' });
+
+  // Results render *below* the inputs, never replacing them: the tweet you're
+  // replying to and the tone you picked stay on screen so a regenerate is one
+  // click away with a different tone.
+  const output = h('div', { class: 'xg-output' });
+
+  const run = async () => {
     if (!isReply && !topic?.value.trim()) {
       topic?.focus();
       return;
     }
 
-    body.replaceChildren(loading(isReply ? 'Writing your replies…' : 'Writing your posts…'));
+    // A fresh batch supersedes the "previously generated" list.
+    body.querySelector('.xg-recent')?.remove();
+    output.replaceChildren(loading(isReply ? 'Writing your replies…' : 'Writing your posts…'));
+    output.scrollIntoView({ block: 'nearest' });
+    foot.replaceChildren();
+    primary = null;
 
     const tone = toneGroup.get();
     const res = isReply
@@ -472,16 +588,22 @@ async function renderInputs(
         });
 
     if (!res.ok) {
-      showError(body, ctx, isReply, res.error);
+      output.replaceChildren(h('p', { class: 'xg-err', textContent: res.error }));
+      setFooter(foot, retry);
       return;
     }
 
     const enforce280 = isReply || formatGroup!.get() !== 'thread';
-    renderResults(body, ctx, isReply, res.data.options, enforce280);
-  });
+    renderResults(output, ctx, isReply, res.data.options, enforce280);
+    setFooter(foot, regen);
+  };
 
-  controls.push(generate);
-  body.replaceChildren(...controls);
+  generate.addEventListener('click', run);
+  regen.addEventListener('click', run);
+  retry.addEventListener('click', run);
+
+  body.replaceChildren(...controls, output);
+  setFooter(foot, generate, '⌘↵ to generate');
 
   // For replies, surface the last set we already generated for THIS exact
   // tweet, so the user can re-insert without paying for a regeneration. Runs
@@ -520,10 +642,8 @@ async function showRecentReplies(body: HTMLElement, ctx: ComposerContext) {
     ...groups,
   );
 
-  // Slot it just above the "Write replies" button.
-  const generate = body.querySelector('.xg-generate');
-  if (generate) body.insertBefore(section, generate);
-  else body.append(section);
+  // Above the output slot, so a fresh batch always lands below these.
+  body.insertBefore(section, body.querySelector('.xg-output'));
 }
 
 function counterFor(text: string, enforce280: boolean): HTMLElement {
@@ -564,31 +684,20 @@ function optionCard(ctx: ComposerContext, text: string, enforce280: boolean): HT
 }
 
 function renderResults(
-  body: HTMLElement,
+  output: HTMLElement,
   ctx: ComposerContext,
   isReply: boolean,
   options: string[],
   enforce280: boolean,
 ) {
   const cards = options.map((text) => optionCard(ctx, text, enforce280));
+  const noun = isReply
+    ? `repl${options.length === 1 ? 'y' : 'ies'}`
+    : `post${options.length === 1 ? '' : 's'}`;
 
-  const regen = h('button', { class: 'xg-regen', type: 'button', textContent: 'Regenerate' });
-  regen.addEventListener('click', () => renderInputs(body, ctx, isReply));
-
-  body.replaceChildren(
-    microLabel('Pick one to insert'),
+  output.replaceChildren(
+    microLabel(`${options.length} ${noun} · pick one to insert`),
     h('div', { class: 'xg-opts' }, ...cards),
-    regen,
   );
-}
-
-function showError(
-  body: HTMLElement,
-  ctx: ComposerContext,
-  isReply: boolean,
-  message: string,
-) {
-  const retry = h('button', { class: 'xg-regen', type: 'button', textContent: 'Try again' });
-  retry.addEventListener('click', () => renderInputs(body, ctx, isReply));
-  body.replaceChildren(h('p', { class: 'xg-err', textContent: message }), retry);
+  output.scrollIntoView({ block: 'nearest' });
 }
