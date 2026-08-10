@@ -1,17 +1,9 @@
+import { POST_FORMATS, TONES } from '@/lib/ai/prompts';
 import { REPLY_OPTION_COUNT } from '@/lib/config';
 import { bg } from '@/lib/messaging';
+import { dateKey, localTimezone, timeKey } from '@/lib/time';
 import { type ComposerContext, insertIntoEditor } from '@/lib/xdom';
-
-const FALLBACK_TONES = [
-  'balanced',
-  'witty',
-  'professional',
-  'contrarian',
-  'hype',
-  'friendly',
-  'funny',
-];
-const FORMATS = ['single', 'hook', 'thread'] as const;
+import { FONT_STACK, readXTheme, sparkSvg, themeVars } from '@/lib/xtheme';
 
 let openHost: HTMLElement | null = null;
 let openOverlay: HTMLElement | null = null;
@@ -66,14 +58,15 @@ function h<K extends keyof HTMLElementTagNameMap>(
   return el;
 }
 
-const SPARK_SVG =
-  '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
-  '<path d="M12 2C12.5 7 17 11.5 22 12C17 12.5 12.5 17 12 22C11.5 17 7 12.5 2 12C7 11.5 12.5 7 12 2Z"/>' +
-  '</svg>';
+/** X's own close glyph, so the modal header matches theirs exactly. */
+const CLOSE_SVG =
+  '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true" ' +
+  'style="display:block"><path d="M10.59 12L4.54 5.96l1.42-1.42L12 10.59l6.04-6.05 1.42 1.42L13.41 ' +
+  '12l6.05 6.04-1.42 1.42L12 13.41l-6.04 6.05-1.42-1.42L10.59 12z"/></svg>';
 
 function spark(): HTMLElement {
   const s = h('span', { class: 'xg-spark' });
-  s.innerHTML = SPARK_SVG;
+  s.innerHTML = sparkSvg(20);
   return s;
 }
 
@@ -163,9 +156,12 @@ function chipGroup(
 }
 
 function loading(message: string): HTMLElement {
-  const dots = h('span', { class: 'xg-dots' });
-  dots.innerHTML = '<i></i><i></i><i></i>';
-  return h('div', { class: 'xg-loading' }, dots, h('span', { textContent: message }));
+  return h(
+    'div',
+    { class: 'xg-loading' },
+    h('span', { class: 'xg-ring' }),
+    h('span', { textContent: message }),
+  );
 }
 
 // "just now", "5m ago", "3h ago", "2d ago" — good enough for a subtle timestamp.
@@ -182,16 +178,25 @@ function relativeTime(iso: string | null): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-const STYLE = `
+/**
+ * The panel's look is X's, measured off the live page (see `xtheme.ts`): their
+ * background/accent/text tokens, their Chirp font, their 15px body size, their
+ * fully-round buttons, their 16px dialog radius, and their row-per-item lists
+ * with a hover wash instead of bordered cards.
+ */
+function style(): string {
+  const theme = readXTheme();
+
+  return `
 :host { all: initial; }
-* { box-sizing: border-box; font-family: ui-sans-serif, -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif; }
+* { box-sizing: border-box; font-family: ${FONT_STACK}; }
 
 .xg-overlay {
+  ${themeVars(theme)}
   position: fixed; inset: 0; z-index: 2147483647;
   display: flex; align-items: center; justify-content: center;
   padding: 32px 16px;
-  background: rgba(6,5,10,.62);
-  backdrop-filter: blur(3px);
+  background: var(--xg-scrim);
   opacity: 0;
   transition: opacity .16s ease-out;
 }
@@ -199,66 +204,63 @@ const STYLE = `
 .xg-overlay.is-closing { opacity: 0; pointer-events: none; transition-duration: .13s; }
 
 .xg-panel {
-  --ink: #100F14;
-  --raise: #1A1822;
-  --raise-2: #232029;
-  --line: rgba(255,255,255,.09);
-  --text: #F4F1EA;
-  --muted: #968FA3;
-  --amber: #F6B44C;
-  --amber-2: #EA9A38;
-  --danger: #FF7A6B;
-
   position: relative;
-  width: 100%; max-width: 560px;
+  width: 100%; max-width: 600px;
   max-height: 100%; min-height: 0;
-  background: var(--ink); color: var(--text);
-  border: 1px solid var(--line); border-radius: 18px;
-  box-shadow: 0 24px 64px -16px rgba(0,0,0,.7), 0 2px 8px rgba(0,0,0,.4);
-  overflow: hidden; font-size: 14px;
+  background: var(--xg-bg); color: var(--xg-text);
+  border-radius: 16px;
+  /* X's own modal elevation: a soft light halo in the dark themes, a plain
+     drop shadow on white. */
+  box-shadow: ${
+    theme.dark
+      ? 'rgba(255,255,255,.2) 0 0 15px, rgba(255,255,255,.15) 0 0 3px 1px'
+      : 'rgba(101,119,134,.2) 0 0 15px, rgba(101,119,134,.15) 0 0 3px 1px'
+  };
+  overflow: hidden; font-size: 15px; line-height: 1.3125;
   display: flex; flex-direction: column;
-  opacity: 0; transform: translateY(10px) scale(.98);
+  opacity: 0; transform: translateY(8px) scale(.99);
   transition: opacity .16s ease-out, transform .18s cubic-bezier(.2,.8,.25,1);
 }
 .xg-overlay.is-open .xg-panel { opacity: 1; transform: none; }
 .xg-overlay.is-closing .xg-panel {
-  opacity: 0; transform: translateY(6px) scale(.985);
+  opacity: 0; transform: translateY(6px) scale(.99);
   transition-duration: .13s;
 }
 @keyframes xg-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 
+/* X's modal header: 53px tall, close button on the LEFT of the title. */
 .xg-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 13px 15px; border-bottom: 1px solid rgba(255,255,255,.06);
+  display: flex; align-items: center; gap: 20px;
+  min-height: 53px; padding: 0 16px;
   flex: 0 0 auto;
 }
-.xg-head-acts { display: flex; align-items: center; gap: 8px; }
-.xg-esc {
-  font-family: ui-monospace, "SF Mono", monospace; font-size: 10.5px; color: var(--muted);
-  border: 1px solid var(--line); border-radius: 7px; padding: 3px 7px; line-height: 1;
-}
-.xg-brand { display: flex; align-items: center; gap: 8px; }
-.xg-spark { display: inline-flex; color: var(--amber); filter: drop-shadow(0 0 7px rgba(246,180,76,.5)); }
-.xg-spark svg { width: 17px; height: 17px; display: block; }
-.xg-title { font-weight: 700; font-size: 15px; letter-spacing: -.01em; }
-.xg-x { all: unset; cursor: pointer; color: var(--muted); width: 27px; height: 27px;
-  display: grid; place-items: center; border-radius: 8px; font-size: 15px; line-height: 1; }
-.xg-x:hover { background: var(--raise); color: var(--text); }
-.xg-x:focus-visible { box-shadow: 0 0 0 3px rgba(246,180,76,.3); }
+.xg-head-acts { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.xg-esc { font-size: 13px; color: var(--xg-muted); }
+.xg-brand { display: flex; align-items: center; gap: 10px; }
+.xg-spark { display: inline-flex; color: var(--xg-accent); }
+.xg-spark svg { display: block; }
+.xg-title { font-weight: 700; font-size: 20px; line-height: 24px; }
 
-.xg-body { padding: 15px; display: flex; flex-direction: column; gap: 16px;
+/* X's round icon button, used for close and any other glyph control. */
+.xg-x {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  color: var(--xg-text); width: 34px; height: 34px; margin-left: -8px;
+  display: grid; place-items: center; border-radius: 9999px;
+  font-size: 17px; line-height: 1; transition: background-color .2s;
+}
+.xg-x:hover { background: var(--xg-hover); }
+.xg-x:focus-visible { box-shadow: 0 0 0 2px var(--xg-accent); }
+
+.xg-body { padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 20px;
   flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
-  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent; }
+  scrollbar-width: thin; scrollbar-color: var(--xg-line) transparent; }
 .xg-body::-webkit-scrollbar { width: 10px; }
-.xg-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.2);
+.xg-body::-webkit-scrollbar-thumb { background: var(--xg-line);
   border-radius: 8px; border: 3px solid transparent; background-clip: padding-box; }
 .xg-body::-webkit-scrollbar-track { background: transparent; }
 
-.xg-label {
-  font-family: ui-monospace, "SF Mono", "JetBrains Mono", monospace;
-  font-size: 10.5px; letter-spacing: .15em; text-transform: uppercase;
-  color: var(--muted); margin-bottom: 9px;
-}
+/* X labels sections in plain secondary text, not letterspaced small caps. */
+.xg-label { font-size: 13px; color: var(--xg-muted); margin-bottom: 8px; }
 
 /* The post being replied to stays pinned while the options scroll under it —
    once results render, the inputs are otherwise scrolled off the top and you
@@ -266,155 +268,190 @@ const STYLE = `
    the body's padding so scrolled content never peeks through the gap. */
 .xg-sticky {
   position: sticky; top: 0; z-index: 2;
-  margin: -15px -15px 0; padding: 15px 15px 13px;
-  background: var(--ink);
-  border-bottom: 1px solid rgba(255,255,255,.06);
+  margin: -12px -16px 0; padding: 12px 16px;
+  background: var(--xg-bg);
+  border-bottom: 1px solid var(--xg-line);
 }
 
-.xg-context-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
-.xg-context { display: flex; flex-direction: column; gap: 8px; align-self: stretch; }
+.xg-context-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.xg-context { display: flex; flex-direction: column; gap: 10px; align-self: stretch; }
 /* Expanded posts can be long — cap the pinned block and let it scroll rather
    than pushing the replies off screen. */
 .xg-context.is-expanded { max-height: 220px; overflow-y: auto; padding-right: 4px;
-  scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.22) transparent; }
+  scrollbar-width: thin; scrollbar-color: var(--xg-line) transparent; }
 .xg-more {
   all: unset; box-sizing: border-box; cursor: pointer;
-  font-size: 12px; font-weight: 600; color: var(--amber);
-  padding: 2px 0; margin-left: 14px;
+  font-size: 15px; color: var(--xg-accent); padding: 2px 0; margin-left: 14px;
 }
 .xg-more:hover { text-decoration: underline; }
-.xg-more:focus-visible { box-shadow: 0 0 0 3px rgba(246,180,76,.3); border-radius: 6px; }
+.xg-more:focus-visible { box-shadow: 0 0 0 2px var(--xg-accent); border-radius: 4px; }
 
-.xg-context-role {
-  font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--muted); margin-bottom: -4px;
-}
+.xg-context-role { font-size: 13px; color: var(--xg-muted); margin-bottom: -6px; }
 .xg-quote {
-  font-size: 13px; line-height: 1.5; color: #C9C3D2;
-  border-left: 2px solid var(--amber); padding: 1px 0 1px 12px;
+  font-size: 15px; line-height: 20px; color: var(--xg-text);
+  border-left: 2px solid var(--xg-line); padding: 1px 0 1px 12px;
   overflow: hidden; overflow-wrap: anywhere;
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
 }
-.xg-quote.is-parent {
-  color: var(--muted); border-left-color: var(--line);
-  -webkit-line-clamp: 2;
-}
+.xg-quote.is-parent { color: var(--xg-muted); -webkit-line-clamp: 2; }
 .xg-context.is-expanded .xg-quote { -webkit-line-clamp: unset; }
 
+/* X's text fields: 4px radius, hairline border, accent border on focus. */
 .xg-input {
-  width: 100%; font: inherit; font-size: 14px; color: var(--text);
-  background: var(--raise); border: 1px solid var(--line); border-radius: 12px;
-  padding: 11px 12px; resize: vertical; min-height: 78px; line-height: 1.5;
+  width: 100%; font: inherit; font-size: 15px; line-height: 20px; color: var(--xg-text);
+  background: transparent; border: 1px solid var(--xg-line); border-radius: 4px;
+  padding: 12px; resize: vertical; min-height: 88px;
 }
-.xg-input::placeholder { color: var(--muted); }
-.xg-input:focus { outline: none; border-color: rgba(246,180,76,.55);
-  box-shadow: 0 0 0 3px rgba(246,180,76,.15); }
+.xg-input::placeholder { color: var(--xg-muted); }
+.xg-input:focus { outline: none; border-color: var(--xg-accent); }
 
-.xg-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+/* Date/time fields share the text-field look but must not inherit the
+   textarea's min-height, or a one-line input renders three lines tall. */
+.xg-when { display: flex; gap: 8px; }
+.xg-when .xg-input {
+  min-height: 0; padding: 10px 12px; resize: none;
+  color-scheme: ${theme.dark ? 'dark' : 'light'};
+}
+
+.xg-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .xg-chip {
   all: unset; box-sizing: border-box; cursor: pointer;
-  font-size: 13px; font-weight: 550; color: var(--muted);
-  background: var(--raise); border: 1px solid var(--line);
-  padding: 6px 13px; border-radius: 999px; text-transform: capitalize;
-  transition: color .12s, background .12s, border-color .12s;
+  font-size: 14px; font-weight: 700; color: var(--xg-text);
+  background: transparent; border: 1px solid var(--xg-line);
+  padding: 0 16px; height: 32px; display: inline-flex; align-items: center;
+  border-radius: 9999px; text-transform: capitalize;
+  transition: background-color .2s, border-color .2s;
 }
-.xg-chip:hover { color: var(--text); border-color: rgba(255,255,255,.2); }
+.xg-chip:hover { background: var(--xg-hover); }
 .xg-chip.is-active {
-  color: #1C1206; font-weight: 650; border-color: transparent;
-  background: linear-gradient(180deg, var(--amber), var(--amber-2));
+  color: var(--xg-on-accent); border-color: transparent; background: var(--xg-accent);
 }
-.xg-chip:focus-visible { box-shadow: 0 0 0 3px rgba(246,180,76,.3); }
+.xg-chip.is-active:hover { background: var(--xg-accent-hover); }
+.xg-chip:focus-visible { box-shadow: 0 0 0 2px var(--xg-accent); }
 
 .xg-foot {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; padding: 12px 15px; border-top: 1px solid rgba(255,255,255,.06);
-  background: rgba(255,255,255,.015);
+  gap: 12px; padding: 12px 16px; border-top: 1px solid var(--xg-line);
 }
 .xg-foot:empty { display: none; }
-.xg-hint {
-  font-family: ui-monospace, "SF Mono", monospace; font-size: 11px; color: var(--muted);
-}
+.xg-hint { font-size: 13px; color: var(--xg-muted); }
 
+/* X's primary button — their Post-button fill (white on dark, black on light),
+   15px bold, fully round, 36px tall. Not the accent colour. */
 .xg-generate {
   all: unset; box-sizing: border-box; cursor: pointer; text-align: center;
-  margin-left: auto; padding: 11px 22px; border-radius: 12px;
-  font-weight: 700; font-size: 14.5px; letter-spacing: -.01em; color: #1C1206;
-  background: linear-gradient(180deg, var(--amber), var(--amber-2));
-  box-shadow: 0 8px 20px -8px rgba(246,180,76,.55);
-  transition: filter .12s, transform .05s;
+  margin-left: auto; padding: 0 20px; height: 36px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 9999px; font-weight: 700; font-size: 15px;
+  color: var(--xg-on-primary); background: var(--xg-primary);
+  transition: background-color .2s;
 }
-.xg-generate:hover { filter: brightness(1.05); }
-.xg-generate:active { transform: translateY(1px); }
-.xg-generate:focus-visible { box-shadow: 0 0 0 3px rgba(246,180,76,.35); }
-.xg-generate:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+.xg-generate:hover { background: var(--xg-primary-hover); }
+.xg-generate:focus-visible { box-shadow: 0 0 0 2px var(--xg-bg), 0 0 0 4px var(--xg-accent); }
+.xg-generate:disabled { opacity: .5; cursor: default; }
 
 .xg-output:empty { display: none; }
-.xg-output:not(:empty) {
-  border-top: 1px dashed var(--line); padding-top: 15px;
-  animation: xg-in .16s ease-out;
-}
+.xg-output:not(:empty) { animation: xg-in .16s ease-out; }
 
 .xg-recent {
-  border-top: 1px dashed var(--line); padding-top: 15px;
-  display: flex; flex-direction: column; gap: 14px;
+  border-top: 1px solid var(--xg-line); padding-top: 16px;
+  display: flex; flex-direction: column; gap: 16px;
   animation: xg-in .14s ease-out;
 }
-.xg-recent > .xg-label { margin-bottom: 0; color: var(--amber); }
-.xg-recent-batch .xg-label { margin-bottom: 8px; }
-.xg-recent .xg-opt { background: transparent; }
+.xg-recent > .xg-label { margin-bottom: 0; }
 
-.xg-opts { display: flex; flex-direction: column; gap: 10px; }
+/* Results read as X timeline rows: full-bleed, divided by hairlines, with the
+   standard hover wash — not as bordered cards, which X never uses. */
+.xg-opts { display: flex; flex-direction: column; margin: 0 -16px; }
 .xg-opt {
-  background: var(--raise); border: 1px solid var(--line);
-  border-radius: 14px; padding: 12px; transition: border-color .12s;
+  padding: 12px 16px; border-top: 1px solid var(--xg-line);
+  transition: background-color .2s;
 }
-.xg-opt:hover { border-color: rgba(246,180,76,.4); }
-.xg-opt-text { margin: 0 0 11px; white-space: pre-wrap; line-height: 1.5; font-size: 14px; }
+.xg-opt:hover { background: var(--xg-hover); }
+.xg-opt-text { margin: 0 0 12px; white-space: pre-wrap; line-height: 20px; font-size: 15px; }
 .xg-opt-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.xg-count { font-family: ui-monospace, "SF Mono", monospace; font-size: 11px; color: var(--muted); }
-.xg-count.over { color: var(--danger); }
-.xg-acts { display: flex; gap: 6px; }
+.xg-count { font-size: 13px; color: var(--xg-muted); }
+.xg-count.over { color: var(--xg-danger); }
+.xg-acts { display: flex; gap: 8px; }
+
+/* Outcome line under an option's actions: where it landed, or why it didn't. */
+.xg-saved {
+  display: block; margin-top: 6px; font-size: 13px; line-height: 16px;
+  color: var(--xg-muted);
+}
+.xg-saved:empty { display: none; }
+
+/* An advisory, not an error: X's accent wash, no border, like their own
+   inline notices. */
+.xg-warn {
+  margin: 0; padding: 12px; border-radius: 8px;
+  background: var(--xg-accent-wash); color: var(--xg-text);
+  font-size: 13px; line-height: 18px;
+}
+
+/* X's small buttons: 32px tall, fully round; secondary is outlined. */
 .xg-btn {
   all: unset; box-sizing: border-box; cursor: pointer;
-  font-size: 12.5px; font-weight: 600; padding: 6px 13px; border-radius: 9px;
-  border: 1px solid var(--line); color: var(--text); background: transparent;
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 32px; padding: 0 16px; border-radius: 9999px;
+  font-size: 14px; font-weight: 700;
+  border: 1px solid var(--xg-line); color: var(--xg-text); background: transparent;
+  transition: background-color .2s;
 }
-.xg-btn:hover { background: var(--raise-2); }
-.xg-btn:focus-visible { box-shadow: 0 0 0 3px rgba(246,180,76,.3); }
+.xg-btn:hover { background: var(--xg-hover); }
+.xg-btn:focus-visible { box-shadow: 0 0 0 2px var(--xg-accent); }
 .xg-btn.insert {
-  color: #1C1206; font-weight: 650; border-color: transparent;
-  background: linear-gradient(180deg, var(--amber), var(--amber-2));
+  color: var(--xg-on-primary); border-color: transparent; background: var(--xg-primary);
 }
-.xg-btn.insert:hover { filter: brightness(1.05); background: linear-gradient(180deg, var(--amber), var(--amber-2)); }
+.xg-btn.insert:hover { background: var(--xg-primary-hover); }
 
 .xg-regen {
   all: unset; box-sizing: border-box; cursor: pointer; text-align: center;
-  margin-left: auto; padding: 10px 20px; border-radius: 11px; font-size: 13px; font-weight: 600;
-  color: var(--muted); border: 1px solid var(--line);
+  margin-left: auto; height: 36px; padding: 0 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 9999px; font-size: 15px; font-weight: 700;
+  color: var(--xg-text); border: 1px solid var(--xg-line);
+  transition: background-color .2s;
 }
-.xg-regen:hover { color: var(--text); background: var(--raise); }
-.xg-regen:focus-visible { box-shadow: 0 0 0 3px rgba(246,180,76,.3); }
+.xg-regen:hover { background: var(--xg-hover); }
+.xg-regen:focus-visible { box-shadow: 0 0 0 2px var(--xg-accent); }
 
-.xg-note { color: var(--muted); font-size: 13px; line-height: 1.55; margin: 2px 0; }
-.xg-err { color: var(--danger); font-size: 13px; line-height: 1.5; margin: 0; }
+.xg-note { color: var(--xg-muted); font-size: 15px; line-height: 20px; margin: 2px 0; }
+.xg-err { color: var(--xg-danger); font-size: 15px; line-height: 20px; margin: 0; }
 
-.xg-loading { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; padding: 12px 0; }
-.xg-dots { display: inline-flex; gap: 4px; }
-.xg-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--amber);
-  animation: xg-bounce 1s infinite ease-in-out; }
-.xg-dots i:nth-child(2) { animation-delay: .15s; }
-.xg-dots i:nth-child(3) { animation-delay: .3s; }
-@keyframes xg-bounce { 0%,60%,100% { transform: translateY(0); opacity: .45; } 30% { transform: translateY(-5px); opacity: 1; } }
+/* X's loading state is a single accent ring, nothing else. */
+.xg-loading { display: flex; align-items: center; gap: 12px; color: var(--xg-muted);
+  font-size: 15px; padding: 16px 0; }
+.xg-ring {
+  width: 20px; height: 20px; flex: 0 0 auto; border-radius: 9999px;
+  border: 2px solid var(--xg-line); border-top-color: var(--xg-accent);
+  animation: xg-spin .8s linear infinite;
+}
+@keyframes xg-spin { to { transform: rotate(360deg); } }
 
 @media (prefers-reduced-motion: reduce) {
   .xg-overlay, .xg-panel { transition: none; }
   .xg-panel { transform: none; }
   .xg-recent { animation: none; }
-  .xg-dots i { animation: none; }
+  .xg-ring { animation: none; }
 }
 `;
+}
 
 export function openPanel(ctx: ComposerContext): void {
+  const ui = openShell(ctx.mode === 'reply' ? 'AI reply' : 'AI post');
+
+  renderInputs(ui, ctx, ctx.mode === 'reply');
+}
+
+/**
+ * Build the modal — shadow root, overlay, header, body, footer, and every
+ * dismissal path — and hand back the two slots a state renders into.
+ *
+ * Shared by the composer panel and the remix panel so the two are the same
+ * object to the user: same chrome, same Escape/⌘↵ behaviour, same X styling.
+ */
+function openShell(title: string): PanelUI {
   closePanel(true);
 
   const host = document.createElement('div');
@@ -422,28 +459,33 @@ export function openPanel(ctx: ComposerContext): void {
   openHost = host;
 
   const shadow = host.attachShadow({ mode: 'open' });
-  shadow.append(h('style', { textContent: STYLE }));
+  // Read fresh so the panel follows a theme/accent change without a reload.
+  shadow.append(h('style', { textContent: style() }));
 
-  const isReply = ctx.mode === 'reply';
   const body = h('div', { class: 'xg-body' });
   const foot = h('div', { class: 'xg-foot' });
 
-  const closeBtn = h('button', { class: 'xg-x', type: 'button', textContent: '✕', title: 'Close' });
+  const closeBtn = h('button', { class: 'xg-x', type: 'button', title: 'Close' });
+  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.innerHTML = CLOSE_SVG;
   // Wrapped: passing the listener directly would hand the event to `immediate`.
   closeBtn.addEventListener('click', () => closePanel());
 
+  // X puts the close button at the head of the modal header, left of the
+  // title, rather than floating it at the far right.
   const panel = h(
     'div',
     { class: 'xg-panel' },
     h(
       'div',
       { class: 'xg-head' },
+      closeBtn,
       h('div', { class: 'xg-brand' }, spark(), h('span', {
         class: 'xg-title',
-        textContent: isReply ? 'AI reply' : 'AI post',
+        textContent: title,
       })),
       h('div', { class: 'xg-head-acts' },
-        h('span', { class: 'xg-esc', textContent: 'esc' }), closeBtn),
+        h('span', { class: 'xg-esc', textContent: 'esc' })),
     ),
     body,
     foot,
@@ -485,7 +527,7 @@ export function openPanel(ctx: ComposerContext): void {
     document.removeEventListener('keydown', onKey);
   };
 
-  renderInputs({ body, foot }, ctx, isReply);
+  return { body, foot };
 }
 
 // Put a state's primary action in the footer (with an optional left-hand hint)
@@ -508,21 +550,41 @@ async function renderInputs(
   foot.replaceChildren();
   primary = null;
 
-  const auth = await bg.getAuth();
-  if (!auth.ok) {
-    body.replaceChildren(h('p', { class: 'xg-note' }, auth.error));
+  const settings = await bg.getSettings();
+  if (!settings.ok) {
+    body.replaceChildren(h('p', { class: 'xg-note' }, settings.error));
     return;
   }
-  if (!auth.data.connected) {
+  if (!settings.data.account) {
     body.replaceChildren(
       h('p', { class: 'xg-note' },
-        'Open the X-Grow icon in your toolbar and paste your token to start generating.'),
+        'Connect your X account first — open X-Grow in the left sidebar, or click the toolbar icon.'),
+    );
+    return;
+  }
+  if (!settings.data.hasKey) {
+    body.replaceChildren(
+      h('p', { class: 'xg-note' },
+        'Open the X-Grow icon in your toolbar and add your OpenAI API key to start generating.'),
     );
     return;
   }
 
-  const tones = auth.data.me?.options.tones ?? FALLBACK_TONES;
-  const defaultTone = auth.data.me?.voice_profile?.tone ?? 'balanced';
+  const tones = [...TONES];
+  const profile = settings.data.voiceProfile;
+  const defaultTone = profile?.tone ?? 'balanced';
+
+  /*
+   * With an empty profile the model has nothing specific to be specific about,
+   * so it falls back to the generic observations that read as AI. The prompt
+   * even offers a "something the owner has actually lived" shape, which is
+   * unavailable when there are no facts. Say so here rather than letting the
+   * user conclude the product is just bad.
+   */
+  const thinVoice =
+    !profile?.sample_posts?.trim() &&
+    !profile?.voice_analysis?.trim() &&
+    !profile?.facts?.trim();
 
   const toneGroup = chipGroup(tones, defaultTone, 'Tone');
 
@@ -539,7 +601,7 @@ async function renderInputs(
       class: 'xg-input',
       placeholder: "What's this post about? A topic, a link, or a rough idea.",
     });
-    formatGroup = chipGroup(FORMATS, 'single', 'Format');
+    formatGroup = chipGroup(POST_FORMATS, 'single', 'Format');
     controls.push(field('Topic', topic));
     controls.push(field('Format', formatGroup.el));
     controls.push(field('Tone', toneGroup.el));
@@ -602,6 +664,14 @@ async function renderInputs(
   regen.addEventListener('click', run);
   retry.addEventListener('click', run);
 
+  if (thinVoice) {
+    controls.push(
+      h('p', { class: 'xg-warn' },
+        'Your voice profile is empty, so replies will read generic. Add a few ' +
+        'of your real posts in the X-Grow toolbar icon → Voice profile.'),
+    );
+  }
+
   body.replaceChildren(...controls, output);
   setFooter(foot, generate, '⌘↵ to generate');
 
@@ -619,14 +689,14 @@ async function showRecentReplies(body: HTMLElement, ctx: ComposerContext) {
   if (!body.isConnected || body.querySelector('.xg-recent')) return;
 
   const gens = res.data.generations;
-  const total = gens.reduce((n, g) => n + g.options.length, 0);
+  const total = gens.reduce((n, g) => n + g.output.length, 0);
 
   // One labelled group per generation batch (newest first), so each batch keeps
   // its own timestamp/tone context instead of blurring 6 replies into one list.
   const groups = gens.map((gen) => {
     const when = relativeTime(gen.created_at);
     const tone = gen.meta?.tone;
-    const cards = gen.options.map((text) => optionCard(ctx, text, true));
+    const cards = gen.output.map((text) => optionCard(ctx, text, true));
     return h(
       'div',
       { class: 'xg-recent-batch' },
@@ -700,4 +770,260 @@ function renderResults(
     h('div', { class: 'xg-opts' }, ...cards),
   );
   output.scrollIntoView({ block: 'nearest' });
+}
+
+// ---------------------------------------------------------------------------
+// Remix
+//
+// The Inspiration board only holds posts from creators you track. This is the
+// same flow for anything you scroll past: hit the remix button on any tweet and
+// rewrite it in your voice, without leaving the timeline.
+// ---------------------------------------------------------------------------
+
+/** The tweet a remix is based on, read off the article that was clicked. */
+export interface RemixSource {
+  content: string;
+  username: string;
+  x_tweet_id: string;
+  url: string;
+}
+
+const CLOSENESS_LABELS: Record<string, string> = {
+  build: 'Keep it close',
+  balanced: 'Balanced',
+  mine: 'Make it mine',
+};
+
+export function openRemixPanel(source: RemixSource): void {
+  const ui = openShell('Remix this post');
+
+  renderRemixInputs(ui, source);
+}
+
+async function renderRemixInputs(ui: PanelUI, source: RemixSource) {
+  const { body, foot } = ui;
+
+  body.replaceChildren(loading('Loading your voice…'));
+  foot.replaceChildren();
+  primary = null;
+
+  const settings = await bg.getSettings();
+
+  if (!settings.ok) {
+    body.replaceChildren(h('p', { class: 'xg-note' }, settings.error));
+    return;
+  }
+
+  if (!settings.data.account) {
+    body.replaceChildren(
+      h('p', { class: 'xg-note' },
+        'Connect your X account first — click the X-Grow icon in your toolbar.'),
+    );
+    return;
+  }
+
+  if (!settings.data.hasKey) {
+    body.replaceChildren(
+      h('p', { class: 'xg-note' },
+        'Add your OpenAI API key in the X-Grow toolbar icon to start generating.'),
+    );
+    return;
+  }
+
+  const closeness = chipGroup(
+    Object.keys(CLOSENESS_LABELS),
+    'balanced',
+    'How close to the original',
+  );
+
+  // The chips read as keys otherwise ("build", "mine"), which says nothing.
+  closeness.el.querySelectorAll('.xg-chip').forEach((chip, i) => {
+    const key = Object.keys(CLOSENESS_LABELS)[i];
+    chip.textContent = CLOSENESS_LABELS[key];
+  });
+
+  const instructions = h('textarea', {
+    class: 'xg-input',
+    placeholder: 'Optional: steer it. "Make it about my own launch."',
+  });
+
+  const quote = h('div', { class: 'xg-context' },
+    h('div', { class: 'xg-context-role', textContent: `@${source.username}` }),
+    h('div', { class: 'xg-quote', textContent: source.content }),
+  );
+
+  body.replaceChildren(
+    field('Original', h('div', { class: 'xg-context-wrap' }, quote), 'xg-sticky'),
+    field('How close to the original', closeness.el),
+    field('Steer it', instructions),
+  );
+
+  const generate = h('button', {
+    class: 'xg-generate',
+    type: 'button',
+    textContent: 'Write 3 versions',
+  });
+
+  const run = async () => {
+    generate.disabled = true;
+    generate.textContent = 'Writing…';
+
+    // Rendered below the inputs, never over them, so the closeness you chose
+    // stays visible next to what it produced.
+    let output = body.querySelector('.xg-output');
+
+    if (!output) {
+      output = h('div', { class: 'xg-output' });
+      body.append(output);
+    }
+
+    output.replaceChildren(loading('Rewriting in your voice…'));
+
+    const res = await bg.remix({
+      content: source.content,
+      closeness: closeness.get() as 'build' | 'balanced' | 'mine',
+      instructions: instructions.value.trim() || null,
+      source_tweet_id: source.x_tweet_id,
+      source_username: source.username,
+    });
+
+    generate.disabled = false;
+    generate.textContent = 'Try again';
+
+    if (!res.ok) {
+      output.replaceChildren(h('p', { class: 'xg-note' }, res.error));
+      return;
+    }
+
+    // One shared slot for all three options: you pick a version, not three.
+    // Defaulted to a free slot so saving can't fail on a collision you never
+    // chose — every option used to land on the same time and the second lost.
+    const slot = await nextFreeSlot();
+
+    const dateInput = h('input', { class: 'xg-input', type: 'date', value: slot.date });
+    const timeInput = h('input', { class: 'xg-input', type: 'time', value: slot.time });
+
+    const when = () => ({
+      date: dateInput.value,
+      time: timeInput.value,
+      timezone: localTimezone(),
+    });
+
+    output.replaceChildren(
+      microLabel(`${res.data.options.length} versions`),
+      h('div', { class: 'xg-opts' },
+        ...res.data.options.map((text) => remixOptionCard(text, when))),
+      field('When', h('div', { class: 'xg-when' }, dateInput, timeInput)),
+    );
+
+    output.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  };
+
+  generate.addEventListener('click', () => void run());
+  setFooter(foot, generate, '⌘↵');
+}
+
+/**
+ * The first slot from tomorrow 09:00 onwards that nothing already occupies.
+ *
+ * The schedule rejects two posts at the same instant, so defaulting every
+ * option to a fixed time meant the first save won and the rest reported a
+ * conflict the user never asked for.
+ */
+async function nextFreeSlot(): Promise<{ date: string; time: string }> {
+  const res = await bg.schedule();
+  const taken = new Set(res.ok ? res.data.map((post) => post.scheduled_at) : []);
+
+  const when = new Date();
+  when.setDate(when.getDate() + 1);
+  when.setHours(9, 0, 0, 0);
+
+  // A day and a half of hourly slots is far more than a schedule ever fills.
+  for (let i = 0; i < 36; i++) {
+    const date = dateKey(when);
+    const time = timeKey(when);
+
+    if (!taken.has(`${date}T${time}`)) return { date, time };
+
+    when.setHours(when.getHours() + 1);
+  }
+
+  return { date: dateKey(when), time: timeKey(when) };
+}
+
+/**
+ * A remix option. There is no composer open on a timeline, so "Insert" makes no
+ * sense here — the useful destinations are the clipboard and the schedule.
+ *
+ * "Queue" approves the post as well as creating it, which is the whole point of
+ * remixing something: you want it to go out, not to sit as a draft.
+ */
+function remixOptionCard(
+  text: string,
+  when: () => { date: string; time: string; timezone: string },
+): HTMLElement {
+  const copy = h('button', { class: 'xg-btn', type: 'button', textContent: 'Copy' });
+  copy.addEventListener('click', () => {
+    navigator.clipboard.writeText(text);
+    copy.textContent = 'Copied';
+    setTimeout(() => (copy.textContent = 'Copy'), 1200);
+  });
+
+  const note = h('span', { class: 'xg-saved' });
+
+  /** Create the post, and approve it too when queueing. */
+  const commit = async (
+    button: HTMLButtonElement,
+    label: string,
+    queue: boolean,
+  ) => {
+    button.disabled = true;
+    button.textContent = 'Saving…';
+    note.textContent = '';
+
+    const created = await bg.createPost({ content: text, category: null, ...when() });
+
+    if (!created.ok) {
+      button.disabled = false;
+      button.textContent = label;
+      // The real reason, not just "Failed" — a time collision is fixable and
+      // the user can only fix what they can see.
+      note.textContent = created.error;
+      return;
+    }
+
+    if (queue) {
+      const approved = await bg.approvePost(created.data);
+
+      if (!approved.ok) {
+        button.disabled = false;
+        button.textContent = label;
+        note.textContent = approved.error;
+        return;
+      }
+    }
+
+    button.textContent = queue ? 'Queued' : 'Saved';
+    note.textContent = `${when().date} at ${when().time}`;
+  };
+
+  const draft = h('button', { class: 'xg-btn', type: 'button', textContent: 'Draft' });
+  draft.addEventListener('click', () => void commit(draft, 'Draft', false));
+
+  const queue = h('button', {
+    class: 'xg-btn insert',
+    type: 'button',
+    textContent: 'Queue',
+    title: 'Save it and approve it, so it posts automatically at that time',
+  });
+  queue.addEventListener('click', () => void commit(queue, 'Queue', true));
+
+  return h(
+    'div',
+    { class: 'xg-opt' },
+    h('p', { class: 'xg-opt-text', textContent: text }),
+    h('div', { class: 'xg-opt-foot' }, counterFor(text, true),
+      h('div', { class: 'xg-acts' }, copy, draft, queue)),
+    note,
+  );
 }

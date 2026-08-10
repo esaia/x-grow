@@ -1,12 +1,11 @@
-// Default API base URL used until the user overrides it in the popup.
-// Points at the local `php artisan serve` backend. Include the /api prefix.
-export const DEFAULT_API_BASE_URL = 'http://localhost:8001/api';
+/** Default OpenAI endpoint. Overridable for proxies / compatible providers. */
+export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com';
 
-// How many options the ✨ panel asks for. The API validates this at max 5, so
-// raising it further needs GenerateReplyRequest/GeneratePostRequest widened too.
+/** Default model. Matches what the platform shipped, so output doesn't shift. */
+export const DEFAULT_OPENAI_MODEL = 'gpt-4o';
+
+/** How many reply options the composer panel asks for. */
 export const REPLY_OPTION_COUNT = 5;
 
-// Derive the dashboard (web) URL from an API base URL by stripping the /api suffix.
-export function dashboardUrl(apiBaseUrl: string): string {
-  return apiBaseUrl.replace(/\/api\/?$/, '');
-}
+/** Hard character limit for a single X post. */
+export const MAX_TWEET = 280;

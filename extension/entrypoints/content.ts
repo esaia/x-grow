@@ -1,50 +1,48 @@
 import { browser } from 'wxt/browser';
 import { bg } from '@/lib/messaging';
 import type { ContentRequest, HarvestResult } from '@/lib/messaging';
-import { openPanel } from '@/lib/panel';
+import { openPanel, openRemixPanel } from '@/lib/panel';
 import type { CreatorProfile } from '@/lib/xdom';
 import {
   harvestTimeline,
   harvestVisiblePosts,
   ownProfileHandle,
   profileHandle,
+  publishInComposer,
   readComposerContext,
+  readLoggedInAccount,
   readProfileMeta,
+  readTweetFor,
   scrapeOwnPosts,
+  scrapeOwnTimeline,
   SEL,
+  submitAnchor,
 } from '@/lib/xdom';
+import { ensureStyles } from '@/lib/xstyles';
+import { remixSvg, sparkSvg } from '@/lib/xtheme';
 
-const INJECTED = 'data-xgrow-injected';
+/** Marks the ✨ composer button itself, so a re-render can be detected. */
+const INJECTED = 'data-xgrow-ai';
 const LEARN_INJECTED = 'data-xgrow-learn';
 const HARVEST_INJECTED = 'data-xgrow-harvest';
 const HARVEST_FLOATING = 'data-xgrow-harvest-floating';
+const REMIX_INJECTED = 'data-xgrow-remix';
 
 /** How many of a creator's recent posts one harvest tries to collect. */
 const HARVEST_TARGET = 60;
 
-const BUTTON_CSS = `
-  display: inline-flex !important; align-items: center; justify-content: center; gap: 5px;
-  flex: 0 0 auto !important; min-width: 0 !important; width: fit-content !important;
-  align-self: center !important; vertical-align: middle !important;
-  margin-right: 6px; padding: 0 14px; height: 32px;
-  border: 1px solid rgba(246,180,76,.5); border-radius: 999px;
-  background: rgba(246,180,76,.1); color: #F6B44C;
-  font-weight: 700; font-size: 13px; cursor: pointer;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  line-height: 1; white-space: nowrap;
-`;
-
-const BUTTON_SPARK =
-  '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style="display:block">' +
-  '<path d="M12 2C12.5 7 17 11.5 22 12C17 12.5 12.5 17 12 22C11.5 17 7 12.5 2 12C7 11.5 12.5 7 12 2Z"/>' +
-  '</svg>';
-
+/**
+ * The composer's ✨ button: an icon, not a label, sitting with X's own icon
+ * controls next to the Reply button. X's toolbar is all glyphs — a text pill
+ * there reads as an ad for a different product.
+ */
 function makeButton(toolbar: HTMLElement): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
-  button.innerHTML = `${BUTTON_SPARK}<span>AI</span>`;
+  button.className = 'xg-icon-btn';
+  button.innerHTML = sparkSvg(20);
   button.title = 'Generate with X-Grow';
-  button.style.cssText = BUTTON_CSS;
+  button.setAttribute('aria-label', 'Generate with X-Grow');
 
   button.addEventListener('click', (event) => {
     // Don't let X handle or bubble this click.
@@ -59,23 +57,46 @@ function makeButton(toolbar: HTMLElement): HTMLButtonElement {
   return button;
 }
 
-// Small transient status message pinned to the bottom of the screen.
+/**
+ * The remix button on a tweet's action row.
+ *
+ * The Inspiration board only holds posts from creators you track. This is the
+ * same flow for anything you scroll past, without leaving the timeline.
+ */
+function makeRemixButton(actions: HTMLElement): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'xg-icon-btn xg-remix-btn';
+  button.innerHTML = remixSvg(18);
+  button.title = 'Remix this post in your voice';
+  button.setAttribute('aria-label', 'Remix this post in your voice');
+
+  button.addEventListener('click', (event) => {
+    // X makes the whole tweet clickable; without this the click navigates.
+    event.preventDefault();
+    event.stopPropagation();
+
+    const source = readTweetFor(actions);
+
+    if (!source) {
+      toast('Could not read that post. Try opening it first.', 'error');
+      return;
+    }
+
+    openRemixPanel(source);
+  });
+
+  return button;
+}
+
+// Small transient status message pinned to the bottom of the screen, styled
+// like X's own toasts (accent pill, bottom-centre).
 function toast(message: string, tone: 'info' | 'success' | 'error' = 'info') {
   document.querySelector('[data-xgrow-toast]')?.remove();
 
   const el = document.createElement('div');
   el.setAttribute('data-xgrow-toast', '');
-  const color =
-    tone === 'success' ? '#00BA7C' : tone === 'error' ? '#FF7A6B' : '#F6B44C';
-  el.style.cssText = `
-    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
-    z-index: 2147483647; max-width: 380px;
-    background: #17151d; color: #F4F1EA; border: 1px solid rgba(255,255,255,.1);
-    border-left: 3px solid ${color};
-    padding: 11px 16px; border-radius: 12px; font-size: 13.5px; font-weight: 600;
-    box-shadow: 0 16px 40px rgba(0,0,0,.5);
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  `;
+  el.className = 'xg-toast' + (tone === 'error' ? ' is-error' : '');
   el.textContent = message;
   document.body.append(el);
   return el;
@@ -84,9 +105,9 @@ function toast(message: string, tone: 'info' | 'success' | 'error' = 'info') {
 function makeLearnButton(handle: string): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
-  button.innerHTML = `${BUTTON_SPARK}<span>Learn my voice</span>`;
+  button.className = 'xg-pill';
+  button.innerHTML = `${sparkSvg(18)}<span>Learn my voice</span>`;
   button.title = 'Analyze your posts so X-Grow writes in your voice';
-  button.style.cssText = BUTTON_CSS + 'height: 34px; margin-right: 8px;';
 
   button.addEventListener('click', async (event) => {
     event.preventDefault();
@@ -124,9 +145,9 @@ function makeLearnButton(handle: string): HTMLButtonElement {
 function makeHarvestButton(handle: string): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
-  button.innerHTML = `${BUTTON_SPARK}<span>Harvest</span>`;
+  button.className = 'xg-pill';
+  button.innerHTML = `${sparkSvg(18)}<span>Harvest</span>`;
   button.title = `Send @${handle}'s recent posts to X-Grow Inspiration`;
-  button.style.cssText = BUTTON_CSS + 'height: 34px; margin-right: 8px;';
 
   button.addEventListener('click', async (event) => {
     event.preventDefault();
@@ -268,25 +289,34 @@ async function flushPassive() {
 }
 
 function scan() {
-  // AI buttons on every composer toolbar.
-  document.querySelectorAll<HTMLElement>(SEL.toolBar).forEach((toolbar) => {
-    if (toolbar.hasAttribute(INJECTED)) return;
-    toolbar.setAttribute(INJECTED, '');
+  ensureStyles();
 
-    // X's icon buttons don't sit directly in the toolbar — they live in a flex
-    // row (align-items:center) inside the toolbar's <nav>. Inserting into the
-    // toolbar itself leaves our pill a few px too high; inserting into a single
-    // icon's wrapper clips it. Target the icon ROW: the <nav>'s child that
-    // actually contains the icons. Verified to center perfectly (cy diff 0).
-    const nav = toolbar.querySelector('nav');
-    let target: HTMLElement = toolbar;
-    if (nav) {
-      let row = nav.querySelector<HTMLElement>('button, [role="button"]');
-      while (row && row.parentElement !== nav) row = row.parentElement;
-      if (row) target = row;
-    }
-    target.insertBefore(makeButton(toolbar), target.firstChild);
+  // AI button on every composer toolbar. Checked by presence rather than by a
+  // "done" flag on the toolbar: the button now lives in the Reply button's row,
+  // and X re-renders that row whenever the Reply button enables/disables — a
+  // flag would mark the toolbar done and never put the button back.
+  document.querySelectorAll<HTMLElement>(SEL.toolBar).forEach((toolbar) => {
+    if (composerScope(toolbar).querySelector(`[${INJECTED}]`)) return;
+
+    mountComposerButton(toolbar);
   });
+
+  // Remix button on every tweet's action row. Presence-checked like the
+  // composer button rather than flagged: X recycles these rows as you scroll,
+  // and a flag would let a reused row keep a button that no longer belongs to
+  // the tweet now rendered in it.
+  // Scoped to tweet articles: `[role="group"][aria-label]` on its own matches
+  // other groups X renders, and we would hang a button off something that has
+  // no post to remix.
+  document
+    .querySelectorAll<HTMLElement>(`${SEL.tweetArticle} ${SEL.tweetActions}`)
+    .forEach((actions) => {
+      if (actions.querySelector(`[${REMIX_INJECTED}]`)) return;
+
+      const button = makeRemixButton(actions);
+      button.setAttribute(REMIX_INJECTED, '');
+      actions.append(button);
+    });
 
   // "Learn my voice" next to the Edit-profile button on your own profile.
   const own = ownProfileHandle();
@@ -308,6 +338,45 @@ function scan() {
     // Navigated away from a profile — drop the floating button if it's up.
     document.querySelector(`[${HARVEST_FLOATING}]`)?.remove();
   }
+}
+
+/**
+ * The part of the page that belongs to one composer: the reply modal if there
+ * is one, else the toolbar's own surroundings. Used to ask "does *this*
+ * composer already have our button?" without matching another composer's.
+ */
+function composerScope(toolbar: HTMLElement): HTMLElement {
+  return toolbar.closest<HTMLElement>(SEL.dialog) ?? toolbar.parentElement ?? toolbar;
+}
+
+/**
+ * Put the ✨ button immediately left of the composer's Reply/Post button.
+ *
+ * Falling back to the end of the icon row (rather than the start, as this used
+ * to do) keeps it the right-most control either way, so the button lands in
+ * roughly the same place even when X reshuffles the toolbar.
+ */
+function mountComposerButton(toolbar: HTMLElement) {
+  const button = makeButton(toolbar);
+  button.setAttribute(INJECTED, '');
+  const anchor = submitAnchor(toolbar);
+
+  if (anchor) {
+    anchor.parent.insertBefore(button, anchor.before);
+    return;
+  }
+
+  // No Reply button found — sit at the end of the toolbar's icon row instead.
+  const nav = toolbar.querySelector('nav');
+  let target: HTMLElement = toolbar;
+
+  if (nav) {
+    let row = nav.querySelector<HTMLElement>('button, [role="button"]');
+    while (row && row.parentElement !== nav) row = row.parentElement;
+    if (row) target = row;
+  }
+
+  target.append(button);
 }
 
 /**
@@ -374,11 +443,7 @@ function mountHarvestButton(handle: string) {
 
   const button = makeHarvestButton(handle);
   button.setAttribute(HARVEST_FLOATING, handle);
-  button.style.cssText += `
-    position: fixed; right: 24px; bottom: 24px; z-index: 2147483646;
-    height: 40px; padding: 0 18px; margin: 0;
-    background: #17151d; box-shadow: 0 10px 30px rgba(0,0,0,.5);
-  `;
+  button.classList.add('xg-floating');
   document.body.append(button);
 }
 
@@ -392,6 +457,47 @@ export default defineContentScript({
     // it exists only for harvesting.
     browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const request = message as ContentRequest;
+
+      // Nor can it read the page to see who is signed in.
+      if (request?.type === 'account:read') {
+        sendResponse({ ok: true, data: readLoggedInAccount() });
+        return false;
+      }
+
+      // Voice learning: scroll the user's own profile and hand back their posts.
+      if (request?.type === 'learn:scrape') {
+        const toastEl = toast('Reading your posts…');
+
+        scrapeOwnTimeline(request.handle)
+          .then((posts) => {
+            toastEl.remove();
+            sendResponse({ ok: true, data: posts });
+          })
+          .catch((error: Error) => {
+            toastEl.remove();
+            sendResponse({ ok: false, error: error?.message ?? 'Could not read your posts' });
+          });
+
+        return true;
+      }
+
+      // Publishing an approved scheduled post through X's own composer.
+      if (request?.type === 'publish:run') {
+        const toastEl = toast('X-Grow is posting…');
+
+        publishInComposer(request.content, request.handle)
+          .then((result) => {
+            toastEl.remove();
+            sendResponse({ ok: true, data: result });
+          })
+          .catch((error: Error) => {
+            toastEl.remove();
+            sendResponse({ ok: false, error: error?.message ?? 'Publishing failed' });
+          });
+
+        return true;
+      }
+
       if (request?.type !== 'harvest:run') return false;
 
       const toastEl = toast(`Harvesting @${request.handle}…`);

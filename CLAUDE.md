@@ -4,95 +4,136 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-X-Grow is an AI copilot for growing an X (Twitter) account. Two parts share one OpenAI API key:
+X-Grow is an AI copilot for growing an X (Twitter) account, shipped as **one Chrome extension** (`extension/`, WXT + React + TypeScript, Manifest V3). There is no server, no database and no user account — it used to have a Laravel + Inertia + MySQL platform alongside it, and that has been deleted; if you find a reference to `platform/`, `/api`, a Sanctum token, or the dashboard↔extension `postMessage` bridge, it is stale.
 
-- **`platform/`** — Laravel 12 + Inertia + React (MySQL) app. It's both the API the extension calls *and* the dashboard (voice profile, weekly schedule, history, connect).
-- **`extension/`** — a Chrome extension (WXT + React + TypeScript) that injects **✨ AI** buttons into x.com to generate replies/posts in the user's voice and inserts them into X's own composer.
-
-The OpenAI key lives **only** in `platform/.env`, never in the extension. The extension authenticates to the platform's `/api` with a Sanctum personal access token generated on the dashboard's `/connect` page. The AI is assist-only for replies and freshly generated/regenerated drafts — it drafts, the user clicks Post (or, for the extension, inserts into X's own composer). The one exception: once the user explicitly moves a Weekly Schedule post from Draft to **Scheduled**, it auto-publishes to that post's target network (X or LinkedIn) via the connected account when its time arrives (see "Auto-posting to X and LinkedIn" below) — this only ever applies to schedule posts the user has explicitly approved, never to freshly generated drafts or extension replies.
+Everything runs in the browser:
 
 ```
-Chrome extension  ──HTTPS──▶  Laravel platform (MySQL)  ──HTTPS──▶  OpenAI API
-  reads x.com                   /api  +  dashboard                  (server-side
-  ✨ buttons     ◀──JSON──       voice profile, tokens    ◀──JSON──   key only)
-  inserts text                   usage, history
+Chrome extension ──HTTPS──▶ OpenAI API
+  content script            (the user's own key)
+    ✨ buttons on x.com
+  popup + dashboard tab
+    the whole UI, off-page
+  background worker  ◀── owns the key, owns every write
+  IndexedDB          ◀── voice profile, generations, schedule, creators, inspiration
 ```
+
+Onboarding is two steps, enforced in that order: **connect the X account** → **add an OpenAI key**. Both happen in the dashboard, which relays detection through an open x.com tab (`account:read`) because it runs in our own document, not on the page.
+
+Three invariants worth stating plainly, because breaking the first two is a security bug:
+
+1. **Only the background worker touches the OpenAI key.** x.com's CSP blocks a content-script fetch to `api.openai.com` anyway, but the real reason is that a page context must never be able to read it. `settings:get` returns `hasKey: boolean`, never the key.
+2. **"Connect your X account" is not OAuth, and must not become OAuth.** The extension already runs inside the user's authenticated x.com session, so `readLoggedInAccount()` (`lib/xdom.ts`) reads the signed-in handle/name/avatar off the left nav — the Profile link's href first, the avatar container's testid suffix as fallback. Connecting is a confirmation click that stores that account in `chrome.storage.local` (`accountItem`); no tokens, no client id, no developer app. It is stored explicitly rather than re-inferred per page load, because it is a decision the user made once and it has to survive them browsing while logged out.
+
+   The connected account **gates everything** (the composer panel, the dashboard's nav and screens), is the identity shown throughout, prefills the voice profile's `x_handle` on connect, and is the identity auto-posting publishes as.
+
+3. **The AI is assist-only.** It drafts; the user clicks Post (or Insert, into X's own composer). The one planned exception is the weekly schedule: once a user explicitly moves a post from Draft to **Scheduled**, it auto-publishes at its time — and only ever for posts they approved, never for freshly generated drafts or extension replies.
 
 ## Commands
 
-### Platform (`cd platform`)
-
 ```bash
-composer dev              # runs serve + queue + schedule + vite concurrently (Laravel 12's `php artisan dev`) — `schedule` drives the per-minute auto-post check
-php artisan serve         # backend only, http://localhost:8000
-npm run dev                # Vite dev server only (needed alongside `serve` if not using `composer dev`)
+cd extension
 
-composer test              # config:clear + lint:check + types:check + php artisan test — run before considering PHP work done
-php artisan test           # PHPUnit only
-php artisan test --filter=TestName   # single test
-
-composer lint               # Pint, auto-fix
-composer lint:check         # Pint, check only (CI)
-composer types:check        # phpstan (larastan) analyse, level 7
-
-npm run lint                # eslint --fix
-npm run lint:check          # eslint (CI)
-npm run format               # prettier --write resources/
-npm run format:check
-npm run types:check          # tsc --noEmit
-
-php artisan wayfinder:generate --with-form   # regenerate resources/js/routes + resources/js/actions after changing PHP routes/controllers (the --with-form flag is required — vite.config.ts sets formVariants: true and the auth pages use the .form helpers; omitting it breaks types:check)
-php artisan migrate
-```
-
-CI (`.github/workflows/`) runs `lint.yml` (Pint + eslint + prettier + types) and `tests.yml` (PHPUnit on PHP 8.3–8.5) on push/PR to `develop`/`main`/`master`/`workos`.
-
-Test login (seeded): `test@example.com` / `password`.
-
-### Extension (`cd extension`)
-
-```bash
 npm run dev          # wxt dev — builds to .output/chrome-mv3 and watches
 npm run build         # production build
 npm run compile       # tsc --noEmit
+npm run check:bundle  # guards against a minifier name collision (runs after `build`)
 ```
+
+**`minify: 'esbuild'` in `wxt.config.ts` is load-bearing.** Vite 8's default (Oxc) minifier merged modules into one scope and gave two different top-level bindings the same short name — React DOM's lane constant `var Ke=256` and our `KEY_FIELDS` array. React does `Ke <<= 1` on its lane, our array silently became a number, and the dashboard died with "Cannot read properties of undefined (reading 'filter')". The source was correct; only the build was wrong, which is why `check:bundle` reads the built output and asserts our module constants still have unique names.
 
 Load unpacked in Chrome: `chrome://extensions` → enable Developer mode → **Load unpacked** → `extension/.output/chrome-mv3`.
 
-No test suite in the extension.
+There is no test suite and no linter configured. `npm run compile`, `npm run check:bundle` and manual verification on x.com are the whole check.
 
 ## Architecture
 
-### Platform (Laravel + Inertia + React, "new-york" shadcn/ui, Tailwind v4)
+### Background worker (`entrypoints/background.ts`)
 
-- **`app/Services/ClaudeService.php`** — thin wrapper around the OpenAI Chat Completions API (`config('services.openai.*')`, env `OPENAI_API_KEY`/`OPENAI_MODEL`/`OPENAI_BASE_URL`). Has `message()` (single call) and `generateOptions()` (asks the model for `{"options": [...]}` JSON, with fallback parsing if it doesn't comply).
-- **`app/Services/PromptBuilder.php`** — the single source of truth for prompt construction. `systemPrompt()` builds the persona + voice from a `VoiceProfile`; `postPrompt()`/`replyPrompt()` build per-request instructions; `weeklyBatchPrompt(array $categories)` builds a numbered, per-slot-styled prompt for batch weekly generation (reused for both full-week generation and single-post regeneration by passing a one-element category array). `TONES`, `POST_FORMATS`, and `POST_CATEGORIES` are the canonical enums — shared with the frontend by hand (e.g. `voice.tsx`'s `TONE_META`, `schedule.tsx`'s `CATEGORY_COLORS` must be kept in sync manually when these change).
-- **API routes (`routes/api.php`)** — `auth:sanctum`, consumed only by the Chrome extension: `/me`, `/voice-profile`, `/voice/learn`, `/generate/{reply,post}`, `/generate/recent`, `/inspiration/ingest`. Controllers in `app/Http/Controllers/Api/`.
-- **Inspiration** (`/inspiration`) — tracked creators (`TrackedCreator`, keyed by @handle) and their best-performing posts (`InspirationPost`), scored by `App\Services\InspirationScorer` against that creator's *own* mean engagement. The platform **never reads x.com itself**: X's API meters post reads (~$0.006 each, so one 10-creator refresh cost dollars), so the Chrome extension harvests instead — `harvestTimeline()` in `extension/lib/xdom.ts` scrolls a creator's profile in the user's own logged-in session, reads text + exact engagement counts out of the rendered DOM (the action row's `aria-label` carries exact numbers; the visible button labels are abbreviated), and POSTs them to `/api/inspiration/ingest`. Ingest **upserts** — a harvest only sees whatever that page had loaded, so it must never replace what is stored — then rescores and trims the creator to `InspirationScorer::KEEP_PER_CREATOR`. Adding a creator needs no X connection at all; the extension backfills name/avatar/followers on first harvest. Three paths feed it, all through the same endpoint: the ✨ Harvest button on a profile; **passive collection**, which sends whatever is already rendered as you read a *tracked* creator's profile and deliberately never scrolls the page you're using (`GET /api/inspiration/creators` tells the content script who is tracked); and **"Harvest all creators"** in the popup, which opens one small `windows.create` popup window and drives it through every tracked creator via `tabs.sendMessage`. That window is deliberately **visible and focused** — Chrome throttles background tabs and X only loads timeline content it believes is on screen, so a hidden tab harvests roughly one screen and stops. Anything reading profile metadata must scope its queries to `SEL.primaryColumn`: the left nav holds the logged-in user's own avatar in an identically-named `UserAvatar-Container-*` element that wins a document-wide lookup.
-- **Web routes (`routes/web.php`)** — `auth,verified`, the Inertia dashboard: `/dashboard`, `/voice`, `/history`, `/schedule` (+ `schedule/generate`, `schedule/posts/{post}` update/regenerate/destroy/schedule/unschedule, `schedule/schedule-all`), `/connect` (Sanctum token management + `connect/x/*` and `connect/linkedin/*` redirect/callback for the OAuth2 connections, and `connect/accounts/{account}` to disconnect any of them). Controllers in `app/Http/Controllers/`.
-- **Models**: `User`, `VoiceProfile` (the writing-style profile the AI mimics), `Generation` (flat audit log of every AI call — reply/post, `output` is a JSON array of option strings, `meta` carries request context like tone/format or `weekly_schedule`/`regenerate` flags), `ScheduledPost` (a single weekly-schedule post: `content`, `category`, `status` (`draft`/`scheduled`/`posted`/`failed`, see `ScheduledPost::STATUS_*`), `platform` (`x`/`linkedin`, see `ScheduledPost::PLATFORM_*`), `error`, `scheduled_at`, `posted_at`, `external_post_id` (a tweet id or a LinkedIn post URN depending on the platform), optional `generation_id` back-reference), `SocialAccount` (one connected posting destination — `provider` (`x`/`linkedin`), `kind` (`person`/`organization`), `external_id`, `name`/`handle`, OAuth tokens stored via Laravel's `encrypted` cast since — unlike Sanctum tokens — they must be decryptable to call those APIs. A user may connect **any number** of these, including several on the same network; unique on `(user_id, provider, external_id)` so re-connecting the same account refreshes it instead of duplicating. LinkedIn company pages are rows with `kind = organization`, connected through a second LinkedIn OAuth app and so holding their own tokens exactly like member rows).
-- **Weekly Schedule feature**: `ScheduleController::generate()` cycles the selected `POST_CATEGORIES` across `per_day * 7` slots, makes **one** Claude call for the whole batch (not one per slot — avoids stacking ~20 sequential HTTP round trips; there is no queue infra in this app, generation is synchronous everywhere), then deletes/replaces that week's existing drafts (`status = draft`) in a DB transaction. `update()` rejects saving a post to a time slot another post already occupies that day (returns a validation error, doesn't silently collide), and reverts a post's status from `scheduled` back to `draft` if its content/category/time is edited (re-approval required before it can auto-post again). `regenerate()` reuses `weeklyBatchPrompt([$category])` for a single post and always resets it to `draft` for the same reason. `schedule()`/`unschedule()`/`scheduleAll()` toggle a post (or a whole week's drafts) between `draft` and `scheduled` — only `scheduled` posts are eligible for auto-posting.
-- **Auto-posting to X and LinkedIn**: a user connects accounts via OAuth2 from `/connect` — X with PKCE (`ConnectXController`), LinkedIn without, sending client credentials in the token request body (`ConnectLinkedInController`, scopes `openid profile w_member_social`). Each connection is stored as a `SocialAccount`. The `schedule:publish-due-posts` Artisan command (`app/Console/Commands/PublishDuePosts.php`), registered in `routes/console.php` via `Schedule::command(...)->everyMinute()`, finds `scheduled` posts whose `scheduled_at` has passed and hands each to `App\Services\SocialPublisher`, which routes on the post's `platform` to `XPostingService` or `LinkedInPostingService` (both mirror `ClaudeService`'s shape: `Http` facade, no SDK). Each publishes as the post's own `socialAccount` and refreshes that account's token first if expired — X rotates the refresh token on every use, so the new one must be persisted each time; LinkedIn only issues refresh tokens to approved apps, so an expired LinkedIn connection usually just has to be re-made by hand. A post's content is always published as a single post verbatim — weekly-schedule content (see `PromptBuilder::weeklyBatchPrompt`) is guaranteed to be one tweet under 280 characters (the same text is what goes to LinkedIn), even when a format uses blank lines internally for visual pacing (e.g. "Question / Poll"), so those blank lines must never be read as a thread-break signal. On success the post becomes `posted` (with `posted_at`/`external_post_id` set — a tweet id for X, the `x-restli-id` response header's post URN for LinkedIn); on any failure it becomes `failed` with the error stored, and does **not** auto-retry — the user must manually re-schedule/retry. Locally, `schedule:work` runs alongside `composer dev` (see `AppServiceProvider::boot()`); in production this instead requires a system cron entry running `php artisan schedule:run` every minute, which is **not** something this codebase can configure for you.
-- **LinkedIn company pages**: require a **second LinkedIn app**, configured separately under `services.linkedin.pages` (`LINKEDIN_PAGES_CLIENT_ID`/`_SECRET`/`_REDIRECT_URI`); leaving the client id blank disables page support and hides the UI. The reason is a hard LinkedIn constraint, not a preference: the **Community Management API** product "requires that it be the only product on the application", so it cannot be provisioned on the app that already holds Sign In with LinkedIn + Share on LinkedIn. Requesting `w_organization_social`/`rw_organization_admin` from the member app fails *before* the consent screen — LinkedIn shows its own generic error page and never redirects back, so the callback's `?error=` handling cannot report it. `ConnectLinkedInPagesController` runs its own handshake against the pages app, lists the pages the member administers (`/rest/organizationAcls?q=roleAssignee`), and stores each as a `SocialAccount` with `kind = organization` holding that app's token. `LinkedInPostingService::refresh()` therefore picks credentials by `kind` — page tokens must be refreshed against the pages app, member tokens against the member app. Publishing differs only in the author URN (`SocialAccount::authorUrn()`).
-- **Post targeting**: every `ScheduledPost` targets exactly one `social_account_id` (with `platform` kept alongside it for display/limits). The `/schedule` Add-post modal offers a multi-select "Post to" row listing every connected account, creating one independent row per selected account; the edit modal's version is single-select, and retargeting an approved post reverts it to `draft`, like a content edit. Slot conflicts (`ScheduleController::hasConflict()`) are scoped per **account**, so two different accounts may share a time while one account can't be double-booked. Week generation (`generate()`) writes for one account chosen in the generate form. Disconnecting an account nulls its posts' `social_account_id` rather than deleting the drafts (`nullOnDelete`) — `schedule()` refuses such a post and `scheduleAll()` skips it, reporting how many were skipped.
-- **Wayfinder** (`@laravel/vite-plugin-wayfinder`) auto-generates `resources/js/routes/**` and `resources/js/actions/**` TypeScript helpers from PHP routes/controllers — regenerate with `php artisan wayfinder:generate --with-form` after adding/changing routes; don't hand-edit those generated files.
-- **Frontend pages** (`resources/js/pages/*.tsx`) follow a consistent pattern: `Heading` + shadcn `Card`s inside `<div className="flex h-full flex-1 flex-col gap-6 p-4">`, Inertia `useForm` for forms, `router.get/post/put/delete` for one-off actions, a `Page.layout = { breadcrumbs: [...] }` static property for the sidebar breadcrumb. Sidebar nav items live in `resources/js/components/app-sidebar.tsx`.
-- **SSR is enabled** (`build:ssr` / Inertia SSR) — client-only values (current date/time, timezone-dependent formatting, `Math.random()`) must not be computed during the initial render or React will throw a hydration mismatch; compute them in a `useEffect` and gate rendering on client-mounted state instead (see `schedule.tsx`'s `todayKey`/`nowOffset` pattern).
-- Times chosen/stored for scheduled posts are **wall-clock values, not real timezone-aware instants** — the frontend reads `HH:MM` directly out of the ISO string rather than constructing a `Date` and calling `toLocaleTimeString`, since the latter re-interprets the stored UTC time in the browser's local timezone and silently shifts the displayed time.
-- No queue/job infrastructure is wired up (`QUEUE_CONNECTION=database` in env but nothing dispatches jobs) — all AI generation, including the weekly batch, runs synchronously within the request. The one periodic task in the app is the Laravel task **scheduler** (`routes/console.php`, `Schedule::command(...)`), which is separate from the (unused) queue — it drives `schedule:publish-due-posts` every minute.
-- No credits/usage-limiting system exists yet; `Api/AccountController@me` exposes a raw generation count to the extension for display only, no enforcement.
+The single owner of the OpenAI key and of every IndexedDB write. One `runtime.onMessage` listener dispatches the `BgRequest` union from `lib/messaging.ts` and always replies `{ok:true,data}` / `{ok:false,error,status}`. Handlers cover settings, voice profile, generation, inspiration ingest, data export/import, harvest orchestration, scheduling and publishing.
 
-### Extension (WXT + React + TypeScript, Manifest V3)
+It also drives **"Harvest all"**: a `windows.create` popup window that walks every tracked creator via `tabs.update` + `tabs.sendMessage`. That window is deliberately **visible and focused** — Chrome throttles background tabs and X only loads timeline content it believes is on screen, so a hidden tab harvests roughly one screen and stops.
 
-- **`entrypoints/background.ts`** — owns the Sanctum token; the only context that calls the platform API.
-- **`entrypoints/content.ts`** — injects the ✨ AI buttons into x.com and observes the page as an SPA.
-- **`entrypoints/popup/`** — connect/status UI.
-- **`lib/xdom.ts`** — **the single source of truth for all x.com DOM selectors and text insertion.** X's DOM changes often and is obfuscated; when buttons stop appearing or text stops inserting into the composer, the fix is almost always here (`data-testid` selectors). Text insertion uses `document.execCommand('insertText')` to drive X's Draft.js editor, with synthetic `InputEvent` fallbacks.
-- **`lib/panel.ts`** — the Shadow-DOM options panel rendered over x.com.
-- **`lib/api.ts` / `messaging.ts` / `storage.ts` / `config.ts` / `types.ts`** — API client, background↔content messaging, token storage, config, shared types.
+### AI (`lib/ai/`)
+
+- **`openai.ts`** — Chat Completions wrapper. `message()` and `generateOptions()` (which asks for `{"options": [...]}` JSON with a fence-stripping fallback parser), plus `stripDashes()` as belt-and-braces against em-dashes.
+- **`quality.ts`** — enforces the reply rules the prompt already states, because models ignore them. A real generation returned five options that were *all* third-person observations about categories of people ("For some…", "Not every chef…", "people who…") — the loudest machine tell there is, and the thing to check first when output feels robotic. `screenReplies()` rejects per option (agreement openers, the "curious how…" family, restating the tweet, more than one question, generalising openers); `setProblems()` catches failures only visible across the whole set (nothing in first/second person, nothing under six words). A set-level failure forces a **fresh** batch rather than a top-up, since keeping the survivors preserves the sameness. Capped at one repair call.
+- **`style.ts`** — turns the owner's real posts into measured constraints ("78% of their posts start lowercase", "they almost never end with a full stop", "typical post is 6 words, shortest are 2"). "Mirror this voice" is a weak instruction; percentages are not. Every line is emitted only when the signal is strong, so a few posts never produce confident nonsense.
+- **`prompts.ts`** — **the single source of truth for prompts and enums.** `TONES`, `POST_FORMATS`, `POST_CATEGORIES`, `REMIX_CLOSENESS` and `HUMAN_SAMPLING` live here and are imported by every UI that displays them; they used to be hand-synced between PHP and two frontends, so do not reintroduce a copy. The wording of these prompts *is* the product — `replyCraftGuidance()`'s anti-"AI reply guy" ruleset in particular. Paraphrasing them is a regression, not a cleanup. The one deliberate departure from the ported wording is the "React, do not generalise" block, added after real output showed the third-person-observation failure the original never named.
+
+### Storage (`lib/db/`, `lib/storage.ts`)
+
+- **`lib/storage.ts`** — settings only (`openai_key`, `openai_model`, `openai_base_url`) via WXT's `storage.defineItem` over `chrome.storage.local`.
+- **`lib/db/idb.ts`** — a dependency-free promise wrapper over IndexedDB. One rule callers must respect: inside a `run()` callback you may only await IDB request promises. Awaiting anything else (a fetch, a `chrome.*` call, a timer) hands control back to the event loop and IndexedDB auto-commits the transaction out from under you.
+- **`lib/db/index.ts`** — typed repositories: voice profile (one record at key 1), generations, scheduled posts, creators, inspiration posts, plus `exportAll()`/`importAll()`. With no server there is no other backup, which is why export shipped in the first release rather than "later".
+- `"unlimitedStorage"` is in the manifest because the inspiration board keeps up to `KEEP_PER_CREATOR` (150) posts per creator, over `chrome.storage.local`'s 10MB cap.
+
+### Time (`lib/time.ts`)
+
+Scheduled posts store a **naive wall-clock** timestamp (`"2026-08-12T09:00"`) next to the IANA timezone it was picked in, so 9:00 AM stays 9:00 AM. Never `new Date(scheduled_at)` for display — that reinterprets it in the browser's zone and silently shifts the time. Read `HH:MM` straight out of the string (`timeOf`), and use `realInstant()` when you need the actual moment.
+
+### The dashboard (`lib/dashboard/`)
+
+React 19 + Tailwind v4, rendered from **one** codebase into **two** of our own documents:
+
+- `entrypoints/popup/` — the toolbar popup. Chrome caps it at **800x600** and sizes it to its content, so `data-surface="popup"` is set in the markup (not from script, which makes the popup visibly resize) and the stylesheet fills that box.
+- `entrypoints/dashboard/` — the same app in a full tab, opened by the popup's ↗ button, which carries the current screen across in the URL hash.
+
+Neither surface is on x.com, so **the dashboard cannot read the page**. Account detection goes through `bg.detectAccount()`, which the background relays to an open x.com tab via `account:read`. There is deliberately no dashboard UI injected into x.com any more — the ✨ buttons and the reply panel are the in-context tools, and they are not modals over the page.
+
+The dashboard owns its own dark palette and does **not** read `xtheme.ts`. That is the opposite of the rule for the on-page controls below, and the split is intentional: our own documents should look like our product, injected controls should look like X's.
+
+Navigation is conditional rendering off a `useState`, no router. Screens land as their phase ships; unbuilt ones are left out rather than rendered as dead buttons.
+
+### On-page UI (`lib/xdom.ts`, `lib/xtheme.ts`, `lib/xstyles.ts`, `lib/panel.ts`, `entrypoints/content.ts`)
+
+All vanilla DOM — React lives only in the popup and the dashboard tab.
+
+- **`lib/xdom.ts`** — **the single source of truth for all x.com DOM selectors and text insertion.** X's DOM changes often and is obfuscated; when buttons stop appearing or text stops inserting into the composer, the fix is almost always here (`data-testid` selectors). Text insertion drives X's Draft.js editor with a synthetic paste, with `beforeinput`/`input` events as fallback. Anything reading profile metadata must scope its queries to `SEL.primaryColumn`: the left nav holds the logged-in user's own avatar in an identically-named `UserAvatar-Container-*` element that wins a document-wide lookup. `harvestTimeline()` collects into a Map *as it scrolls*, because X virtualizes the timeline.
+- **`lib/xtheme.ts` / `lib/xstyles.ts`** — **everything injected into x.com itself must look like X shipped it.** X is not one skin: three background themes (Default / Dim / Lights out) and six accent colours, so the tokens are *measured off the live page* rather than hard-coded. Note the two separate colour tokens: **accent** (links, icons, selected states) comes from a tweet-body link; **primary** (Post-weight buttons) comes from the sidebar Post button, which X currently fills *white on dark / black on light* — using one for the other is what makes a surface look off-brand. The font is the deliberate exception: `FONT_STACK` is written out rather than measured, because a computed value that fails to resolve makes `font-family` invalid at computed-value time, and inside an `all: initial` shadow root the initial font is a **serif** — which is exactly how the panel once shipped rendering in Times. Use X's real numbers: 15px body / 13px secondary, 9999px buttons at 32/36px tall, 34.75px round icon buttons with a 10%-accent hover wash, 16px dialog radius, hairline `--xg-line` dividers. `xstyles.ts` ships these as a **constructed stylesheet** (`adoptedStyleSheets`) — X's CSP would block a `<style>` tag, while CSSOM objects pass and still give real `:hover`/`:focus-visible`.
+- **`lib/panel.ts`** — the Shadow-DOM modal over x.com, carrying its own copy of the `--xg-*` tokens. `openShell()` builds the chrome (overlay, header, Escape/⌘↵, dismissal) and both entry points render into it: `openPanel()` for the composer's ✨ button and `openRemixPanel()` for the remix button on any tweet. This is the only surface that still renders UI on x.com, and it stays React-free on purpose — the content script is ~46kB precisely because React and Tailwind are not in it.
+- **Remix on the timeline** — a button in every tweet's action row (`readTweetFor()` reads author and id off the timestamp permalink, not the header, so a repost attributes correctly). It uses `remixSvg`, deliberately *not* the ✨ spark: the spark means "generate for me" and already lives in the composer. Injection is scoped to `SEL.tweetArticle SEL.tweetActions` — `[role="group"][aria-label]` alone matches other groups — and presence-checked rather than flagged, because X recycles those rows as you scroll.
+- The composer's ✨ button is **icon-only** and mounts immediately left of the Reply/Post button (`submitAnchor()` climbs out of the button's single-child wrappers). Because X re-renders that row whenever Reply enables/disables, `scan()` checks for the button's **presence** (`[data-xgrow-ai]`) instead of flagging the toolbar as done — a flag would let a re-render remove the button permanently.
 - A "thread" generation option is inserted as one block of text (tweets separated by blank lines) for the user to split manually — X has no single-call thread composer in the DOM.
-- **Production deploy note**: after deploying the platform, update `APP_URL` and add the https domain to `host_permissions` in `wxt.config.ts`, then rebuild — the popup's API URL follows `APP_URL`.
 
-## Phase 2 (SaaS)
+### Inspiration (`lib/scoring.ts`, `ingestInspiration()`)
 
-The platform is already multi-user (registration + Sanctum built in). Turning it into a SaaS means: enforce per-plan usage limits in `GenerationController`, add `laravel/cashier` + Stripe for billing, add a marketing/landing page.
+Tracked creators and their best-performing posts, scored against that creator's *own* mean engagement (`engagement()` = like + reply + retweet + quote; views are deliberately excluded because X only reports them reliably on your own posts).
+
+Ingest **upserts by default**, and that default is load-bearing: a harvest only ever sees whatever the page had loaded, so replacing on every run would shrink the board to one screenful. The one opt-out is `replace: true`, sent only by an explicit "Update data" refresh, and applied inside the transaction — never as an upfront wipe — so a run that dies halfway can't leave the board empty.
+
+Three paths feed it, all through the same function: the ✨ Harvest button on a profile; **passive collection**, which sends whatever is already rendered as you read a *tracked* creator's profile and deliberately never scrolls the page you're using; and **"Harvest all creators"**.
+
+### Schedule and auto-posting (`lib/scheduler.ts`, `lib/publisher.ts`)
+
+`scheduler.ts` generates a week with **one** OpenAI call for the whole batch, never one per slot — a 3-a-day week is 21 posts, and 21 sequential round trips inside one click is a minute of spinner. `randomTimesInRange` keeps a 60-minute minimum gap, shrinking it by 15 only when the chosen window can't fit, and jitters within the slack so times don't read as a fixed grid.
+
+Two status rules are load-bearing and ported verbatim: editing an approved post's **content or category** drops it back to `draft` (the user approved specific text for automatic publishing); moving it in **time** does not. `regeneratePost` always resets to draft for the same reason.
+
+`publisher.ts` replaces the old cron + OAuth + X API stack. A `chrome.alarms` tick every minute, plus `onStartup`/`onInstalled`, finds posts whose `realInstant()` has passed and publishes them **sequentially** through X's own composer in a visible scratch window (`publishInComposer()` in `xdom.ts`). Things that must not be "cleaned up":
+
+- **The tick asks "is it due?", never "is it due right now?"** That is what makes a post whose slot passed while Chrome was closed go out late rather than never.
+- **`askTab` retries transport failures only.** A well-formed `{ok:false}` is returned immediately. Retrying an application-level failure could re-send a post that published but failed its confirmation check.
+- **`PUBLISH_TIMEOUT_MS` is longer than every timeout inside the publish path**, so the inner code always reports first. If the backstop fired first, a post could be marked `failed` while actually going out, and the user would repost it by hand.
+- **Failures never auto-retry.** `failed` + the reason is stored; the user fixes and re-approves.
+- **`publishInComposer` hard-fails on an account mismatch.** X may be signed in as someone else by the time the alarm fires; posting an approved draft from the wrong account is worse than not posting it.
+- **The scratch window is visible and focused.** Same constraint as harvesting.
+
+### Inspiration UI (`lib/dashboard/screens/Inspiration.tsx`, `RemixModal.tsx`)
+
+Creator chips (add / filter / delete), the ranked feed, the date + baseline filters, and the remix flow. Constants ported from the platform's `inspiration.tsx`: `DATE_RANGES`, `THRESHOLDS`, `baselineColor()`'s tiers (≥3x / ≥2x / ≥1.5x), `buildTodaySlots()` and the relative-time formatter.
+
+Two differences from the platform version, both consequences of having no server:
+
+- **Filtering is client-side.** The platform sent only the top 300 posts and filtered by date in SQL using a timezone the frontend passed along. Everything is local now, so `dateFloor()` uses the browser's own day boundaries and the whole set is filtered in memory.
+- **"Update data" calls `bg.harvestAll(true)` directly.** The old `postMessage` bridge existed only because a web page can't talk to an extension; the dashboard is the extension now.
+
+Remix's "Post now" creates the `ScheduledPost` row *first* and then publishes, so a failure leaves something visible and retryable on the calendar. The platform deleted the row on failure; that is deliberately not copied — silent disappearance is worse than a visible `failed`.
+
+## Roadmap
+
+Phases 1–3 are built. Still to come:
+
+- **History** — a UI over the `generations` store, which already records every call including remix provenance (`meta.source_tweet_id` / `source_username`).
+
+Deliberately out of scope: the mockup's Trends / Search / Favorites nav icons have no equivalent in the product yet.
