@@ -218,6 +218,25 @@ export function sparkSvg(size = 20): string {
 }
 
 /**
+ * The polish mark: a pencil, on X's 24px grid at their stroke weight.
+ *
+ * A third mark rather than a second spark, for the same reason remix has its
+ * own: the spark next to it means "write this for me", and polish means "fix
+ * what I already wrote". A pencil is the one glyph everybody already reads as
+ * editing, and X uses it nowhere in the composer, so it can't be mistaken for
+ * one of theirs.
+ */
+export function polishSvg(size = 20): string {
+  return (
+    `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" ` +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+    'stroke-linejoin="round" aria-hidden="true" style="display:block">' +
+    '<path d="M4 20.5l1-4.2L16.8 4.5a2.1 2.1 0 0 1 3 3L8 19.5l-4 1z"/>' +
+    '<path d="M14.9 6.4l3 3"/></svg>'
+  );
+}
+
+/**
  * The remix mark: crossing arrows, on X's 24px grid at their stroke weight.
  *
  * Deliberately NOT the ✨ spark. The spark means "generate for me" and already

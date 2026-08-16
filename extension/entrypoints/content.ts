@@ -1,15 +1,17 @@
 import { browser } from 'wxt/browser';
 import { bg } from '@/lib/messaging';
 import type { ContentRequest, HarvestResult } from '@/lib/messaging';
-import { openPanel, openRemixPanel } from '@/lib/panel';
+import { openPanel, openPolishPanel, openRemixPanel } from '@/lib/panel';
 import type { CreatorProfile } from '@/lib/xdom';
 import {
+  findEditorFor,
   harvestTimeline,
   harvestVisiblePosts,
   ownProfileHandle,
   profileHandle,
   publishInComposer,
   readComposerContext,
+  readEditorText,
   readLoggedInAccount,
   readProfileMeta,
   readTweetFor,
@@ -19,10 +21,11 @@ import {
   submitAnchor,
 } from '@/lib/xdom';
 import { ensureStyles } from '@/lib/xstyles';
-import { remixSvg, sparkSvg } from '@/lib/xtheme';
+import { polishSvg, remixSvg, sparkSvg } from '@/lib/xtheme';
 
 /** Marks the ✨ composer button itself, so a re-render can be detected. */
 const INJECTED = 'data-xgrow-ai';
+const POLISH_INJECTED = 'data-xgrow-polish';
 const LEARN_INJECTED = 'data-xgrow-learn';
 const HARVEST_INJECTED = 'data-xgrow-harvest';
 const HARVEST_FLOATING = 'data-xgrow-harvest-floating';
@@ -52,6 +55,44 @@ function makeButton(toolbar: HTMLElement): HTMLButtonElement {
     const ctx = readComposerContext(toolbar);
     if (!ctx) return;
     openPanel(ctx);
+  });
+
+  return button;
+}
+
+/**
+ * The composer's pencil button: fix the grammar and tighten the draft that is
+ * already in the box.
+ *
+ * It sits next to ✨ but does the opposite thing — the spark writes something
+ * from nothing, this one edits what you wrote — and it only appears once there
+ * is a draft to work on, so an empty composer keeps X's own row uncluttered.
+ */
+function makePolishButton(toolbar: HTMLElement): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'xg-icon-btn';
+  button.innerHTML = polishSvg(20);
+  button.title = 'Fix grammar and tighten this draft';
+  button.setAttribute('aria-label', 'Fix grammar and tighten this draft');
+
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const ctx = readComposerContext(toolbar);
+    if (!ctx) return;
+
+    const draft = readEditorText(ctx.editor);
+
+    // The button is hidden while the composer is empty, but X re-renders this
+    // row constantly and a click can land a frame before the sync catches up.
+    if (draft === '') {
+      toast('Write your post first, then polish it.', 'error');
+      return;
+    }
+
+    openPolishPanel(ctx, draft);
   });
 
   return button;
@@ -296,10 +337,14 @@ function scan() {
   // and X re-renders that row whenever the Reply button enables/disables — a
   // flag would mark the toolbar done and never put the button back.
   document.querySelectorAll<HTMLElement>(SEL.toolBar).forEach((toolbar) => {
-    if (composerScope(toolbar).querySelector(`[${INJECTED}]`)) return;
-
-    mountComposerButton(toolbar);
+    if (!composerScope(toolbar).querySelector(`[${INJECTED}]`)) {
+      mountComposerButton(toolbar);
+    }
   });
+
+  // Catches the composer opening with text already in it (a restored draft, or
+  // a reply modal reopened). Typing is handled by the input listener instead.
+  syncPolishButtons();
 
   // Remix button on every tweet's action row. Presence-checked like the
   // composer button rather than flagged: X recycles these rows as you scroll,
@@ -359,9 +404,17 @@ function composerScope(toolbar: HTMLElement): HTMLElement {
 function mountComposerButton(toolbar: HTMLElement) {
   const button = makeButton(toolbar);
   button.setAttribute(INJECTED, '');
+
+  // Pencil to the left of the spark, so ✨ keeps its place next to the Post
+  // button and the pair reads left-to-right as "fix mine" then "write mine".
+  const polish = makePolishButton(toolbar);
+  polish.setAttribute(POLISH_INJECTED, '');
+  polish.hidden = true;
+
   const anchor = submitAnchor(toolbar);
 
   if (anchor) {
+    anchor.parent.insertBefore(polish, anchor.before);
     anchor.parent.insertBefore(button, anchor.before);
     return;
   }
@@ -376,7 +429,31 @@ function mountComposerButton(toolbar: HTMLElement) {
     if (row) target = row;
   }
 
-  target.append(button);
+  target.append(polish, button);
+}
+
+/**
+ * Show the pencil only when there is a draft to polish.
+ *
+ * Driven by a document-level `input` listener rather than the MutationObserver
+ * below: typing inside an existing text node is a `characterData` mutation, not
+ * a `childList` one, so the observer can miss a whole first line being typed —
+ * and observing characterData would re-run the full scan on every keystroke.
+ */
+function syncPolishButtons() {
+  document.querySelectorAll<HTMLElement>(SEL.toolBar).forEach(syncPolishButton);
+}
+
+function syncPolishButton(toolbar: HTMLElement) {
+  const button = composerScope(toolbar).querySelector<HTMLElement>(
+    `[${POLISH_INJECTED}]`,
+  );
+
+  if (!button) return;
+
+  const editor = findEditorFor(toolbar);
+
+  button.hidden = !editor || readEditorText(editor) === '';
 }
 
 /**
@@ -527,6 +604,11 @@ export default defineContentScript({
     });
 
     scan();
+
+    // Capture phase, so it still arrives if Draft stops the event on its way
+    // up. One listener for the page's lifetime beats re-binding one per
+    // composer, which X rebuilds constantly.
+    document.addEventListener('input', syncPolishButtons, true);
 
     // X is a SPA: composers mount/unmount as the user navigates and opens
     // reply modals. Re-scan (throttled) whenever the DOM changes.

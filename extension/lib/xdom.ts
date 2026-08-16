@@ -502,7 +502,7 @@ export async function publishInComposer(
     throw new Error("X's composer did not open.");
   }
 
-  insertIntoEditor(editor, content);
+  await insertIntoEditor(editor, content);
 
   // X enables Post only once it has processed the input, so wait for the
   // button to go live rather than clicking into a disabled control.
@@ -670,6 +670,63 @@ export function readComposerContext(toolbar: HTMLElement): ComposerContext | nul
 }
 
 /**
+ * Read what the user has typed into a composer, line breaks intact.
+ *
+ * Draft.js renders one `[data-block="true"]` div per line, so joining those
+ * with "\n" reproduces the draft exactly — including the blank lines between
+ * paragraphs, which matter because polishing is supposed to hand the same
+ * shaped post back. `textContent` on the editor alone would run every line
+ * together into one; `innerText` would respect the breaks but depends on
+ * layout, and it returns nothing for a composer that is scrolled out of view.
+ *
+ * Draft parks a zero-width space in otherwise-empty blocks, which would make an
+ * empty composer read as non-empty — hence the strip.
+ */
+export function readEditorText(editor: HTMLElement): string {
+  const blocks = editor.querySelectorAll<HTMLElement>('[data-block="true"]');
+
+  const text = blocks.length
+    ? Array.from(blocks, (block) => block.textContent ?? '').join('\n')
+    : editor.textContent ?? '';
+
+  return text.replace(/\u200b/g, '').trim();
+}
+
+/**
+ * Select everything in the editor, and wait for Draft.js to notice.
+ *
+ * The wait is the whole point. Draft keeps its own selection in `EditorState`
+ * and only re-reads the DOM's when the browser's `selectionchange` fires, which
+ * it does asynchronously, after the current task. Selecting and pasting in one
+ * task means the paste handler still sees the collapsed caret at the end of the
+ * post — so the new text lands *after* the old instead of replacing it, which
+ * is exactly the "...2 years agojust tell claude..." mess a polish produced.
+ *
+ * The extra `setTimeout` after the event gives React a task to flush Draft's
+ * state update in; the 60ms cap keeps a browser that never fires the event from
+ * hanging the insert (a duplicated draft is recoverable, a dead button is not).
+ */
+async function selectAllIn(editor: HTMLElement): Promise<void> {
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+
+  await new Promise<void>((resolve) => {
+    const settle = () => {
+      document.removeEventListener('selectionchange', settle);
+      clearTimeout(timer);
+      setTimeout(resolve, 0);
+    };
+
+    const timer = setTimeout(settle, 60);
+    document.addEventListener('selectionchange', settle);
+  });
+}
+
+/**
  * Replace the editor's content with `text`.
  *
  * X's composer is a Draft.js contenteditable. `execCommand('insertText')` is
@@ -679,11 +736,11 @@ export function readComposerContext(toolbar: HTMLElement): ComposerContext | nul
  * synthetic paste event — Draft has a dedicated paste handler that inserts the
  * text exactly once, as real editor state (deletable, enables the Post button).
  */
-export function insertIntoEditor(editor: HTMLElement, text: string): void {
+export async function insertIntoEditor(editor: HTMLElement, text: string): Promise<void> {
   editor.focus();
 
   // Select any existing content so the paste REPLACES it instead of appending.
-  document.execCommand('selectAll', false);
+  await selectAllIn(editor);
 
   const data = new DataTransfer();
   data.setData('text/plain', text);

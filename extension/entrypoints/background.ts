@@ -5,6 +5,8 @@ import {
   analyzeSystemPrompt,
   HUMAN_SAMPLING,
   inspirationPrompt,
+  POLISH_SAMPLING,
+  polishPrompt,
   postPrompt,
   replyPrompt,
   systemPrompt,
@@ -49,6 +51,7 @@ import type {
   CreatorsResponse,
   GenerateResponse,
   HarvestRun,
+  PolishPayload,
   PostPayload,
   RemixPayload,
   ReplyPayload,
@@ -78,6 +81,14 @@ const REPLY_CANDIDATES = 5;
 const POST_MAX_TOKENS = 1024;
 const THREAD_MAX_TOKENS = 2048;
 const LEARN_MAX_TOKENS = 600;
+
+/**
+ * Polishing returns two versions of one draft: a minimal correction and a
+ * tighter rewrite. Both come from a single call, and the budget only has to
+ * cover two tweets plus JSON.
+ */
+const POLISH_VERSIONS = 2;
+const POLISH_MAX_TOKENS = 700;
 
 async function settingsState(): Promise<SettingsState> {
   const [config, usage, voiceProfile, account] = await Promise.all([
@@ -282,6 +293,52 @@ ${repairPrompt(first.rejected, needed + 2, problems)}`,
 
     return pick.length > 0 ? pick : options.slice(0, count);
   }
+}
+
+/**
+ * "Polish": clean up the draft already sitting in X's composer.
+ *
+ * The user's own words are the input, so none of the reply machinery applies —
+ * no screening (there is no AI-reply-guy failure to catch), no `applyStyle`
+ * (forcing the profile's measured casing onto a draft they just typed would
+ * "fix" the very habits it is supposed to preserve), and no over-asking.
+ */
+async function polish(payload: PolishPayload): Promise<GenerateResponse> {
+  const draft = payload.draft.trim();
+
+  if (draft === '') {
+    throw new OpenAiError('There is nothing in the composer to polish.', 422);
+  }
+
+  const [config, profile] = await Promise.all([getOpenAiConfig(), getVoiceProfile()]);
+
+  const result = await generateOptions(
+    config,
+    systemPrompt(profile),
+    polishPrompt(draft),
+    POLISH_VERSIONS,
+    // Long-form drafts are returned whole, twice over, so the budget has to
+    // scale with the input rather than assume a tweet.
+    Math.max(POLISH_MAX_TOKENS, Math.ceil(draft.length / 2)),
+    POLISH_SAMPLING,
+  );
+
+  const generationId = await logGeneration({
+    type: 'post',
+    input_context: draft,
+    meta: { polish: true },
+    output: result.options,
+    model: result.model,
+    tokens_in: result.input_tokens,
+    tokens_out: result.output_tokens,
+  });
+
+  return {
+    generation_id: generationId,
+    type: 'post',
+    options: result.options,
+    model: result.model,
+  };
 }
 
 async function learnVoice(
@@ -598,6 +655,9 @@ async function handle(message: BgRequest): Promise<unknown> {
 
     case 'generate:post':
       return generate('post', message.payload);
+
+    case 'generate:polish':
+      return polish(message.payload);
 
     case 'generate:recent':
       return {

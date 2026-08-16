@@ -61,6 +61,20 @@ export const HUMAN_SAMPLING = {
   frequency_penalty: 0.3,
 } as const;
 
+/**
+ * Sampling for polishing a draft the user already wrote.
+ *
+ * Deliberately NOT `HUMAN_SAMPLING`: its frequency/presence penalties exist to
+ * push a *fresh* generation off the model's flattest phrasing, and they do the
+ * exact wrong thing here — they penalise reusing the words already in the
+ * prompt, which are the user's own words and the whole thing we are trying to
+ * keep. Low temperature for the same reason: a polish should be the same post,
+ * spelled correctly.
+ */
+export const POLISH_SAMPLING = {
+  temperature: 0.4,
+} as const;
+
 /** PHP's filled(): a value that is neither null nor blank after trimming. */
 function filled(value: string | null | undefined): value is string {
   return typeof value === 'string' && value.trim() !== '';
@@ -374,6 +388,62 @@ export function postPrompt(
   }
 
   return parts.join('\n\n');
+}
+
+/**
+ * Prompt for polishing a draft the user has already typed into X's composer.
+ *
+ * This is an edit, not a generation, and every rule below exists to stop the
+ * model doing what it wants to do: rewrite the post as its own. The draft is
+ * already the user's idea in the user's voice — the job is spelling, grammar
+ * and rhythm, and nothing else. A "better" post that says something the user
+ * did not say is a failure here, however good it reads.
+ *
+ * Two versions are asked for in one call rather than one: a minimal correction
+ * is what someone wants most of the time, but the reason they were pasting
+ * drafts into ChatGPT is the other case — "make this land better" — and a
+ * second round trip to find out which one they meant is the whole latency
+ * budget. The order is pinned so the panel can label them.
+ */
+export function polishPrompt(draft: string): string {
+  // A draft that is already over the limit is a deliberate long-form post (X
+  // Premium allows them), not a mistake — telling the model to "cut it back"
+  // there would delete paragraphs the user wrote on purpose.
+  const lengthRule =
+    draft.trim().length > 280
+      ? '- This draft is a long-form post and that is deliberate. Keep it roughly its current length; ' +
+        'do not compress it into a single tweet.\n'
+      : '- Both versions must stay under 280 characters.\n';
+
+  return (
+    'The account owner has already typed this draft post and wants it cleaned up before ' +
+    'they hit Post:\n"""\n' +
+    draft.trim() +
+    '\n"""\n\n' +
+    'Return exactly 2 versions, in this order:\n' +
+    '1. MINIMAL FIX — the same post with its mistakes corrected. Fix spelling, typos, verb tenses, ' +
+    'missing or wrong small words ("you need optimize" → "you need to optimize"), punctuation and ' +
+    'obvious word-order slips. Capitalize proper nouns (product, company and people names). Change ' +
+    'nothing else. Someone reading both should struggle to spot what moved.\n' +
+    '2. SHARPER — the same post, same meaning and same claims, but tightened: cut dead words, fix the ' +
+    'rhythm, and make the opening line hit harder. Still recognisably the post they wrote, not a new ' +
+    'one on the same topic.\n\n' +
+    'Rules for both, and these outrank every style instruction above:\n' +
+    '- Keep their meaning exactly. Never add a claim, a number, a name, a link, a hashtag or an emoji ' +
+    'they did not write, and never drop one they did. If a sentence is ambiguous, keep it ambiguous.\n' +
+    '- Keep their capitalization habits. A post typed entirely in lowercase, a lowercase "i", or a ' +
+    'missing full stop at the end is how they write, not a mistake to correct.\n' +
+    '- Keep the line breaks and blank lines exactly where they put them. If the draft is two ' +
+    'paragraphs, both versions are two paragraphs.\n' +
+    '- Keep the length in the same neighbourhood. A one-line post stays one line; do not expand a ' +
+    'draft into something longer or more explained than they wrote.\n' +
+    '- Do not add a call to action, a question at the end, a summary line, or a hook they did not ask ' +
+    'for. Do not turn a statement into a question.\n' +
+    lengthRule +
+    '\n' +
+    'Return the corrected post text only — no notes, no explanation of what you changed, no quotes ' +
+    'around it.'
+  );
 }
 
 /**

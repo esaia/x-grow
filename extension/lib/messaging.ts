@@ -13,6 +13,7 @@ import type {
   IngestPayload,
   IngestResponse,
   InspirationPost,
+  PolishPayload,
   PostPayload,
   RecentPayload,
   RecentResponse,
@@ -41,6 +42,7 @@ export type BgRequest =
   | { type: 'voice:learn-from-profile' }
   | { type: 'generate:reply'; payload: ReplyPayload }
   | { type: 'generate:post'; payload: PostPayload }
+  | { type: 'generate:polish'; payload: PolishPayload }
   | { type: 'generate:recent'; payload: RecentPayload }
   | { type: 'inspiration:ingest'; payload: IngestPayload }
   | { type: 'inspiration:creators'; fresh?: boolean }
@@ -135,6 +137,9 @@ export const bg = {
     send<GenerateResponse>({ type: 'generate:reply', payload }),
   post: (payload: PostPayload) =>
     send<GenerateResponse>({ type: 'generate:post', payload }),
+  /** Clean up a draft the user typed themselves, rather than writing a new one. */
+  polish: (payload: PolishPayload) =>
+    send<GenerateResponse>({ type: 'generate:polish', payload }),
   recent: (payload: RecentPayload) =>
     send<RecentResponse>({ type: 'generate:recent', payload }),
   ingestInspiration: (payload: IngestPayload) =>

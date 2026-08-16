@@ -57,6 +57,8 @@ export interface GenerationMeta {
   weekly_schedule?: boolean;
   regenerate?: boolean;
   inspiration?: boolean;
+  /** An edit of the user's own draft, not something written from a topic. */
+  polish?: boolean;
   closeness?: string;
   source_tweet_id?: string;
   source_username?: string;
@@ -188,6 +190,11 @@ export interface PostPayload {
   format?: PostFormat;
   tone?: string;
   count?: number;
+}
+
+/** "Polish" — clean up the draft the user has already typed in the composer. */
+export interface PolishPayload {
+  draft: string;
 }
 
 /** "Remix this post" — rewrite a creator's viral post in the owner's voice. */

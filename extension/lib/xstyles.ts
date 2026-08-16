@@ -46,6 +46,10 @@ function css(t: XTheme): string {
 .xg-icon-btn:hover { background-color: var(--xg-accent-wash); }
 .xg-icon-btn:focus-visible { box-shadow: 0 0 0 2px var(--xg-accent); }
 .xg-icon-btn[disabled] { opacity: .5; cursor: default; }
+/* The all:unset above wipes the UA's [hidden] rule, and the explicit
+   display:inline-flex then wins over it — so hiding the polish button (it only
+   applies once there is a draft) needs this said again here. */
+.xg-icon-btn[hidden] { display: none; }
 .xg-icon-btn svg { width: 20px; height: 20px; display: block; }
 
 /* X's secondary (outlined) button — used for the profile-page actions, which

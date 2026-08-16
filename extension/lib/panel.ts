@@ -2,6 +2,7 @@ import { POST_FORMATS, TONES } from '@/lib/ai/prompts';
 import { REPLY_OPTION_COUNT } from '@/lib/config';
 import { bg } from '@/lib/messaging';
 import { dateKey, localTimezone, timeKey } from '@/lib/time';
+import type { SettingsState } from '@/lib/types';
 import { type ComposerContext, insertIntoEditor } from '@/lib/xdom';
 import { FONT_STACK, readXTheme, sparkSvg, themeVars } from '@/lib/xtheme';
 
@@ -360,6 +361,10 @@ function style(): string {
 }
 .xg-recent > .xg-label { margin-bottom: 0; }
 
+/* Polish shows two labelled versions rather than one list of options — the
+   label is the point ("Cleaned up" vs "Sharper"), so they need separating. */
+.xg-versions { display: flex; flex-direction: column; gap: 16px; }
+
 /* Results read as X timeline rows: full-bleed, divided by hairlines, with the
    standard hover wash — not as bordered cards, which X never uses. */
 .xg-opts { display: flex; flex-direction: column; margin: 0 -16px; }
@@ -540,38 +545,51 @@ function setFooter(foot: HTMLElement, button: HTMLButtonElement, hint?: string) 
   );
 }
 
+/**
+ * Load settings, or render why the panel can't do anything yet.
+ *
+ * Onboarding is ordered — account, then key — so the checks are too, and every
+ * entry point has to make the same three, in the same order, with the same
+ * wording. Returning null after having already rendered the reason keeps each
+ * caller to one `if`.
+ */
+async function loadReady(ui: PanelUI): Promise<SettingsState | null> {
+  const { body, foot } = ui;
+
+  body.replaceChildren(loading('Loading your voice…'));
+  foot.replaceChildren();
+  primary = null;
+
+  const settings = await bg.getSettings();
+
+  const blocked = !settings.ok
+    ? settings.error
+    : !settings.data.account
+      ? 'Connect your X account first — open X-Grow in the left sidebar, or click the toolbar icon.'
+      : !settings.data.hasKey
+        ? 'Open the X-Grow icon in your toolbar and add your OpenAI API key to start generating.'
+        : null;
+
+  if (blocked !== null) {
+    body.replaceChildren(h('p', { class: 'xg-note' }, blocked));
+    return null;
+  }
+
+  return settings.ok ? settings.data : null;
+}
+
 async function renderInputs(
   ui: PanelUI,
   ctx: ComposerContext,
   isReply: boolean,
 ) {
   const { body, foot } = ui;
-  body.replaceChildren(loading('Loading your voice…'));
-  foot.replaceChildren();
-  primary = null;
 
-  const settings = await bg.getSettings();
-  if (!settings.ok) {
-    body.replaceChildren(h('p', { class: 'xg-note' }, settings.error));
-    return;
-  }
-  if (!settings.data.account) {
-    body.replaceChildren(
-      h('p', { class: 'xg-note' },
-        'Connect your X account first — open X-Grow in the left sidebar, or click the toolbar icon.'),
-    );
-    return;
-  }
-  if (!settings.data.hasKey) {
-    body.replaceChildren(
-      h('p', { class: 'xg-note' },
-        'Open the X-Grow icon in your toolbar and add your OpenAI API key to start generating.'),
-    );
-    return;
-  }
+  const ready = await loadReady(ui);
+  if (!ready) return;
 
   const tones = [...TONES];
-  const profile = settings.data.voiceProfile;
+  const profile = ready.voiceProfile;
   const defaultTone = profile?.tone ?? 'balanced';
 
   /*
@@ -740,8 +758,10 @@ function counterFor(text: string, enforce280: boolean): HTMLElement {
 function optionCard(ctx: ComposerContext, text: string, enforce280: boolean): HTMLElement {
   const insert = h('button', { class: 'xg-btn insert', type: 'button', textContent: 'Insert' });
   insert.addEventListener('click', () => {
-    insertIntoEditor(ctx.editor, text);
-    closePanel();
+    // Closed only once the text has actually landed: the insert selects the
+    // composer's content first, and tearing the modal down mid-way would move
+    // focus out of the editor while that selection is being made.
+    void insertIntoEditor(ctx.editor, text).finally(() => closePanel());
   });
 
   const copy = h('button', { class: 'xg-btn', type: 'button', textContent: 'Copy' });
@@ -780,6 +800,79 @@ function renderResults(
 }
 
 // ---------------------------------------------------------------------------
+// Polish
+//
+// The one flow that starts from something the user already wrote. Everything
+// else here is "write this for me"; this is "I typed it, fix it" — the round
+// trip to ChatGPT that used to happen before every post.
+// ---------------------------------------------------------------------------
+
+/**
+ * The two versions the prompt asks for, in the order it pins them. Labels are
+ * cosmetic: if the model ever swaps them the user still gets both, they are
+ * just named the wrong way round, which is why nothing downstream reads these.
+ */
+const POLISH_LABELS = ['Cleaned up', 'Sharper'];
+
+export function openPolishPanel(ctx: ComposerContext, draft: string): void {
+  const ui = openShell('Polish this draft');
+
+  void renderPolish(ui, ctx, draft);
+}
+
+async function renderPolish(ui: PanelUI, ctx: ComposerContext, draft: string) {
+  const { body, foot } = ui;
+
+  if (!(await loadReady(ui))) return;
+
+  // The draft stays pinned above the versions: the only way to judge a polish
+  // is against what you wrote, and Insert overwrites the composer, so this is
+  // also the last place the original is visible.
+  const original = field(
+    'Your draft',
+    h('div', { class: 'xg-context-wrap' },
+      h('div', { class: 'xg-context' }, h('div', { class: 'xg-quote', textContent: draft }))),
+    'xg-sticky',
+  );
+
+  const output = h('div', { class: 'xg-output' });
+  const retry = h('button', { class: 'xg-regen', type: 'button', textContent: 'Try again' });
+
+  body.replaceChildren(original, output);
+
+  const run = async () => {
+    output.replaceChildren(loading('Fixing it up…'));
+    foot.replaceChildren();
+    primary = null;
+
+    const res = await bg.polish({ draft });
+
+    if (!res.ok) {
+      output.replaceChildren(h('p', { class: 'xg-err', textContent: res.error }));
+      setFooter(foot, retry);
+      return;
+    }
+
+    output.replaceChildren(
+      h('div', { class: 'xg-versions' },
+        ...res.data.options.map((text, i) =>
+          h('div', {},
+            microLabel(POLISH_LABELS[i] ?? `Version ${i + 1}`),
+            h('div', { class: 'xg-opts' }, optionCard(ctx, text, draft.length <= 280)))),
+      ),
+    );
+
+    setFooter(foot, retry, 'Insert replaces what you typed');
+  };
+
+  retry.addEventListener('click', () => void run());
+
+  // No inputs to fill in, so there is nothing to wait for a click on: one press
+  // of the pencil should be the whole interaction.
+  await run();
+}
+
+// ---------------------------------------------------------------------------
 // Remix
 //
 // The Inspiration board only holds posts from creators you track. This is the
@@ -810,32 +903,7 @@ export function openRemixPanel(source: RemixSource): void {
 async function renderRemixInputs(ui: PanelUI, source: RemixSource) {
   const { body, foot } = ui;
 
-  body.replaceChildren(loading('Loading your voice…'));
-  foot.replaceChildren();
-  primary = null;
-
-  const settings = await bg.getSettings();
-
-  if (!settings.ok) {
-    body.replaceChildren(h('p', { class: 'xg-note' }, settings.error));
-    return;
-  }
-
-  if (!settings.data.account) {
-    body.replaceChildren(
-      h('p', { class: 'xg-note' },
-        'Connect your X account first — click the X-Grow icon in your toolbar.'),
-    );
-    return;
-  }
-
-  if (!settings.data.hasKey) {
-    body.replaceChildren(
-      h('p', { class: 'xg-note' },
-        'Add your OpenAI API key in the X-Grow toolbar icon to start generating.'),
-    );
-    return;
-  }
+  if (!(await loadReady(ui))) return;
 
   const closeness = chipGroup(
     Object.keys(CLOSENESS_LABELS),
