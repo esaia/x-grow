@@ -2,7 +2,7 @@
  * Enforcement for the reply rules `replyCraftGuidance()` states in the prompt.
  *
  * The prompt already forbids compliment openers, the "curious how…" family,
- * restating the tweet, and more than one question. Models ignore it anyway —
+ * restating the tweet, and questions of any kind. Models ignore it anyway —
  * a real generation came back with "Agreed. Not every chef needs an open
  * kitchen", "Wouldn't work for people who crave privacy in solo projects" and
  * "But isn't the feedback valuable even for the hesitant ones?", which is three
@@ -97,6 +97,57 @@ const GENERALISING =
 
 const FIRST_OR_SECOND = /\b(?:i|i'm|i've|i'd|ive|im|me|my|mine|you|you're|your|yours|youre|we|us|our)\b/i;
 
+/**
+ * Is the tweet someone sharing a win?
+ *
+ * The compliment ban exists because "congrats! how did you do it?" is the AI
+ * reply guy's move on every tweet. On an actual win it is the *correct* reply,
+ * so the screener has to know the difference or it throws away exactly the
+ * replies the user wanted. Deliberately keyword-based rather than a second
+ * model call: this runs on the critical path of a mid-scroll generation, and a
+ * false negative only costs a warm opener, not a broken reply.
+ */
+export function isCelebration(tweet: string): boolean {
+  return CELEBRATION.test(tweet);
+}
+
+/**
+ * First-person claims about the owner's past that the model has no way to know.
+ *
+ * "never tried instagram for plugin sales, maybe i should" is the failure this
+ * exists for: fluent, in-voice, and a straight invention the user has to catch
+ * before they post it. A generalising reply is embarrassing; a fabricated
+ * autobiography is a lie in their own timeline, so this is the stricter check.
+ *
+ * Present-tense reactions ("i love this", "i'm using that") are left alone —
+ * only the past-tense/habitual shapes that assert history are caught.
+ *
+ * The elided subject matters as much as the explicit one: the reply that
+ * prompted this was "never tried instagram for plugin sales, maybe i should",
+ * which asserts a fact about the owner without ever typing "I".
+ */
+const EXPERIENCE_VERBS =
+  'tried|used|switched|quit|stopped|started|built|shipped|bought|sold|paid|charged|tested|ran|wrote|learned|left|joined|hired|fired|lost|earned|made';
+
+const INVENTED_EXPERIENCE = new RegExp(
+  [
+    // "i never tried…", "we built…", "i used to…"
+    `\\b(?:i|we)\\s+(?:(?:have\\s+)?never|always|used\\s+to|still|finally|just|once|already)?\\s*(?:${EXPERIENCE_VERBS})\\b`,
+    // Same claim with the subject dropped, the way people actually type it.
+    `^\\s*(?:honestly\\s+|still\\s+)?(?:never|always|used\\s+to|once)\\s+(?:${EXPERIENCE_VERBS})\\b`,
+    // "used to …" is autobiography whatever verb follows it.
+    '\\b(?:i\\s+)?used\\s+to\\s+\\w+',
+    "\\bi'?ve\\s+(?:never|always|been|tried|used|done)\\b",
+    '\\bworked\\s+for\\s+me\\b',
+    '\\bin\\s+my\\s+experience\\b',
+    '\\bwhen\\s+i\\s+(?:was|did|had|tried|built|started)\\b',
+  ].join('|'),
+  'i',
+);
+
+const CELEBRATION =
+  /\b(?:just (?:hit|shipped|launched|landed|closed|got|finished|passed|crossed)|i (?:hit|shipped|launched|got paid|landed|got|reached|crossed|finished)|we (?:hit|shipped|launched|raised|closed|crossed)|got paid|first (?:paying )?(?:customer|client|sale|user|dollar|payment|\$)|hit (?:my|our|\d)|crossed \$?\d|reached \$?\d|milestone|new (?:job|role|record|pr\b)|so grateful|excited to (?:share|announce)|happy to (?:share|announce)|proud to|finally (?:shipped|launched|done|finished)|\bmrr\b|\barr\b|anniversary|graduated|accepted (?:into|to)|went live|is live\b|shipped it)/i;
+
 function wordCount(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
@@ -106,12 +157,16 @@ function wordCount(text: string): number {
  * on its own. Two failures only show up across the set, not per option:
  * everything being third-person, and everything being the same length.
  */
-export function setProblems(options: string[]): string[] {
+export function setProblems(options: string[], tweet = ''): string[] {
   const problems: string[] = [];
 
   if (options.length < 2) return problems;
 
-  if (!options.some((option) => FIRST_OR_SECOND.test(option))) {
+  // "wooow congrats mate" is the right reply to a win and contains neither an
+  // "I" nor a "you". Demanding one there would force a pointless repair call.
+  const celebrating = isCelebration(tweet);
+
+  if (!celebrating && !options.some((option) => FIRST_OR_SECOND.test(option))) {
     problems.push(
       'not one option spoke as "I" or to "you" — they were all observations about other people',
     );
@@ -127,15 +182,17 @@ export function setProblems(options: string[]): string[] {
 }
 
 /**
- * Drop the options that break the rules, keeping at most one question.
+ * Drop the options that break the rules.
  *
- * Order is preserved, and the first question survives — the prompt does allow
- * one, it is only the "every option is a question" pattern that reads as AI.
+ * Two rules are absolute: no questions (the user does not want reply-guy
+ * questions, so a question mark is a rejection, not a quota), and no
+ * compliment openers — except when the tweet is a win, where a congrats is the
+ * reply the user asked for and the opener check is skipped.
  */
 export function screenReplies(options: string[], tweet: string): Screening {
   const kept: string[] = [];
   const rejected: Rejection[] = [];
-  let questions = 0;
+  const celebrating = isCelebration(tweet);
 
   for (const option of options) {
     const text = option.trim();
@@ -144,7 +201,7 @@ export function screenReplies(options: string[], tweet: string): Screening {
 
     const phrase = PHRASES.find((entry) => entry.pattern.test(text));
 
-    if (OPENERS.test(text)) {
+    if (!celebrating && OPENERS.test(text)) {
       rejected.push({ option: text, reason: 'it opens with agreement or a compliment' });
       continue;
     }
@@ -168,13 +225,18 @@ export function screenReplies(options: string[], tweet: string): Screening {
       continue;
     }
 
-    if (text.endsWith('?')) {
-      questions++;
+    if (INVENTED_EXPERIENCE.test(text)) {
+      rejected.push({
+        option: text,
+        reason:
+          "it invents something about the owner's own life, which the model cannot know",
+      });
+      continue;
+    }
 
-      if (questions > 1) {
-        rejected.push({ option: text, reason: 'more than one option was a question' });
-        continue;
-      }
+    if (text.includes('?')) {
+      rejected.push({ option: text, reason: 'it asks a question, and replies must never ask one' });
+      continue;
     }
 
     kept.push(text);
@@ -244,11 +306,14 @@ export function repairPrompt(
 
   parts.push(
     `Write ${needed} completely different replies. Do not repeat those mistakes, ` +
-      'and do not reuse their wording or their shape. Answer as the owner ' +
-      'reacting in first person, or speak directly to the poster. Make at least ' +
-      'one of them under six words. Reach for the shapes that were missing: a dry ' +
-      'joke about one specific detail, a blunt reaction with no question, an angle ' +
-      'the tweet did not mention, or friendly pushback.',
+      'and do not reuse their wording or their shape. None of them may contain a ' +
+      'question mark, and none may claim anything about the owner\'s own past — ' +
+      'no "i tried", "i used to", "i never". Speak directly to the poster, or ' +
+      'react flatly to the thing itself. Make at least one of them under six words. Reach ' +
+      'for the shapes that were missing: a dry joke about one specific detail, a ' +
+      'blunt reaction, an angle the tweet did not mention, or friendly pushback. ' +
+      'If the tweet was someone sharing a win, congratulate them warmly instead, ' +
+      'the way a friend would type it.',
   );
 
   return parts.join('\n\n');

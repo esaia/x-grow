@@ -67,10 +67,14 @@ const REPLY_MAX_TOKENS = 1536;
  * For replies we ask the model for more options than the panel shows, then
  * screen and rank down to `count`. With an exact-count ask, every option the
  * screener rejects is a slot the user simply loses — which is what made
- * regenerating feel like a slot machine. Extra candidates in the same single
- * call are nearly free; a second round trip is not.
+ * regenerating feel like a slot machine.
+ *
+ * Kept at roughly 1.6x `REPLY_OPTION_COUNT`: enough headroom that a normal
+ * batch survives screening without the repair call, without paying for
+ * candidates nobody sees. These are the tokens the user waits on, so this is
+ * not free — over-asking further trades spinner time for headroom we don't need.
  */
-const REPLY_CANDIDATES = 8;
+const REPLY_CANDIDATES = 5;
 const POST_MAX_TOKENS = 1024;
 const THREAD_MAX_TOKENS = 2048;
 const LEARN_MAX_TOKENS = 600;
@@ -242,7 +246,7 @@ async function screenedReplies(
   // Two ways a batch fails: too many individual options broke a rule, or the
   // set as a whole reads as machine output (all third-person, all one length)
   // even though each option passed on its own.
-  const problems = setProblems(pick);
+  const problems = setProblems(pick, tweet);
   const thin = pick.length < Math.min(3, count);
 
   if (!thin && problems.length === 0) {
@@ -689,11 +693,34 @@ function runPublishTick(): void {
   );
 }
 
+/**
+ * Ensure the publish alarm exists, without disturbing it if it already does.
+ *
+ * This runs on every service worker wake — a popup open, a content-script
+ * message, the tick itself — so it must not call `alarms.create` blindly.
+ * Creating an alarm that already exists *restarts its countdown*, which meant
+ * a user clicking around the extension could hold the minute tick off
+ * indefinitely and a scheduled post would never publish.
+ *
+ * The promise is awaited rather than dropped: `alarms.create` rejects when the
+ * worker is being torn down mid-call, and an unhandled rejection here is what
+ * surfaced as "Uncaught (in promise) Error: No SW" in the Errors panel.
+ */
+async function ensureAlarm(): Promise<void> {
+  try {
+    if (await browser.alarms.get(ALARM_NAME)) return;
+
+    await browser.alarms.create(ALARM_NAME, { periodInMinutes: 1 });
+  } catch (error) {
+    console.error('[X-Grow] Could not schedule the publish alarm', error);
+  }
+}
+
 export default defineBackground(() => {
   // The minute tick is what makes a scheduled post go out. `onStartup` is what
   // makes a post whose time passed while Chrome was closed go out late rather
   // than never — the single most important difference from a server cron.
-  browser.alarms.create(ALARM_NAME, { periodInMinutes: 1 });
+  void ensureAlarm();
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === ALARM_NAME) runPublishTick();
   });

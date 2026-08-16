@@ -576,17 +576,24 @@ async function renderInputs(
 
   /*
    * With an empty profile the model has nothing specific to be specific about,
-   * so it falls back to the generic observations that read as AI. The prompt
-   * even offers a "something the owner has actually lived" shape, which is
-   * unavailable when there are no facts. Say so here rather than letting the
-   * user conclude the product is just bad.
+   * so it falls back to the generic observations that read as AI — and with no
+   * facts to draw on, the prompt forbids it from saying anything about the
+   * owner's life at all. Say so here rather than letting the user conclude the
+   * product is just bad.
    */
   const thinVoice =
     !profile?.sample_posts?.trim() &&
     !profile?.voice_analysis?.trim() &&
     !profile?.facts?.trim();
 
-  const toneGroup = chipGroup(tones, defaultTone, 'Tone');
+  /*
+   * Replies don't get a tone picker. Seven chips is a decision to make while
+   * mid-scroll on someone else's tweet, and the answer is always the profile's
+   * default anyway — the tone that makes a reply land is set by the tweet
+   * you're answering, not by a chip. Composing a post is the opposite: you
+   * opened the panel on purpose, so the choice is worth showing there.
+   */
+  const toneGroup = isReply ? null : chipGroup(tones, defaultTone, 'Tone');
 
   let topic: HTMLTextAreaElement | null = null;
   let formatGroup: { el: HTMLElement; get: () => string } | null = null;
@@ -595,7 +602,6 @@ async function renderInputs(
 
   if (isReply) {
     controls.push(field('Replying to', replyContext(ctx), 'xg-sticky'));
-    controls.push(field('Tone', toneGroup.el));
   } else {
     topic = h('textarea', {
       class: 'xg-input',
@@ -604,7 +610,7 @@ async function renderInputs(
     formatGroup = chipGroup(POST_FORMATS, 'single', 'Format');
     controls.push(field('Topic', topic));
     controls.push(field('Format', formatGroup.el));
-    controls.push(field('Tone', toneGroup.el));
+    controls.push(field('Tone', toneGroup!.el));
   }
 
   const generate = h('button', {
@@ -618,8 +624,8 @@ async function renderInputs(
   const retry = h('button', { class: 'xg-regen', type: 'button', textContent: 'Try again' });
 
   // Results render *below* the inputs, never replacing them: the tweet you're
-  // replying to and the tone you picked stay on screen so a regenerate is one
-  // click away with a different tone.
+  // replying to (or the topic and format you typed) stays on screen, so a
+  // regenerate is one click away.
   const output = h('div', { class: 'xg-output' });
 
   const run = async () => {
@@ -635,7 +641,8 @@ async function renderInputs(
     foot.replaceChildren();
     primary = null;
 
-    const tone = toneGroup.get();
+    // No picker on replies: the background falls back to the profile's tone.
+    const tone = toneGroup?.get() ?? defaultTone;
     const res = isReply
       ? await bg.reply({
           tweet: ctx.tweet,

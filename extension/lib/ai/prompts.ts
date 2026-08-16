@@ -232,9 +232,41 @@ export function replyPrompt(
       'If the profile lists more than one project/link, pick the one most relevant to the tweet.',
   );
 
+  parts.push(celebrationGuidance());
+
   parts.push(replyCraftGuidance());
 
   return parts.join('\n\n');
+}
+
+/**
+ * The one case where a compliment is the correct reply.
+ *
+ * `replyCraftGuidance()` bans "congrats"/"nice work" openers because they are
+ * the AI reply guy's default move on *every* tweet. But when someone posts a
+ * win — first payment, a launch, a milestone, a new job — a warm congrats is
+ * literally what a friend types, and withholding it to avoid sounding like a
+ * bot makes the reply read cold instead. So the ban is scoped: celebrate on
+ * wins, never open with validation anywhere else.
+ */
+function celebrationGuidance(): string {
+  return (
+    'If the tweet is someone sharing a win or good news about themselves (a first paying customer, ' +
+    'a revenue or follower number, shipping/launching something, a new job, a personal record, an ' +
+    'anniversary), then CELEBRATE WITH THEM. This is the one case where a compliment is the right ' +
+    'reply, and the "never open with a compliment" rule below does not apply.\n' +
+    '- Write it the way a friend types it on a phone, not the way a brand account does: ' +
+    '"wooow congrats mate", "nice work man", "huge, congrats", "lets goo", "well deserved".\n' +
+    '- Then add ONE short line tied to a specific detail of their tweet, so it cannot be ' +
+    'copy-pasted onto anyone else\'s win. For "$171 from posting on X": "$171 from yapping is still ' +
+    'money most people never make online".\n' +
+    '- Keep it warm and a bit sloppy. Repeated letters ("wooow", "huge"), fragments and a missing ' +
+    'full stop are all correct here.\n' +
+    '- Never follow the congrats with a question. Never add advice, a lesson, or a "here is why this ' +
+    'matters" explanation. Never one-up them with your own numbers.\n' +
+    '- Vary the options: one bare short congrats, one congrats plus the specific detail, one that ' +
+    'reacts to the thing itself. Never five variations of the same sentence.'
+  );
 }
 
 /**
@@ -252,25 +284,38 @@ function replyCraftGuidance(): string {
     '- A short reaction that shows you actually read it: one blunt line, no question.\n' +
     "- A related observation or angle the tweet didn't mention.\n" +
     "- Friendly pushback: name the part you'd disagree with or complicate.\n" +
-    '- Something the owner has actually lived (only using facts from their profile), told in one line.\n' +
-    '- A genuinely specific question — but at most ONE option may be a question, and it must ask about ' +
-    'something concrete in the tweet, not a generic "what\'s next for you?".\n\n' +
+    '- A flat, dry statement of the thing everyone thinks and nobody says.\n' +
+    '- A concrete detail or consequence of the thing the tweet is about, said plainly.\n\n' +
+    'NEVER invent the owner\'s personal history. You do not know what they have tried, used, quit, ' +
+    'bought, built, or felt. Anything specific about their life must already appear in the "Facts about ' +
+    'the account owner" section, and if that section is empty you know nothing about them at all. ' +
+    'Banned unless the fact is listed: "i never tried X", "i used to X", "i stopped X", "i switched to ' +
+    'X", "i always X", "X worked for me", "i tap out at ninety seconds", or any number, tool, habit, or ' +
+    'outcome attributed to the owner.\n' +
+    'Write about the THING instead, or talk to the poster. A sharp line about the subject beats a made-up ' +
+    'story about the owner every time, and a made-up story is a lie they have to notice before they post ' +
+    'it.\n\n' +
+    'NEVER ask a question. Not one option, not a "genuinely specific" one, not a rhetorical one. No ' +
+    'option may contain a question mark. If a reply only works as a question, throw it away and say ' +
+    'the thing as a statement instead.\n\n' +
     'React, do not generalise. This is the mistake that makes a reply obviously written by a ' +
     'machine, and it is worse than any banned phrase. A real person answers as themselves or ' +
     'talks to the poster. A model writes tidy observations about categories of people:\n' +
     '- BAD: "For some, it\'s like keeping a diary in front of an audience."\n' +
     '- BAD: "Not every chef needs an open kitchen."\n' +
     '- BAD: "Wouldn\'t work for people who crave privacy."\n' +
-    'Those are about "some", "every chef", "people who". Nobody talks like that. Most options must ' +
-    'be "I"/"me"/"my" or "you"/"your", or a flat reaction to the thing itself. At most one may be a ' +
-    'general statement, and only if it is funny or sharp enough to earn it.\n\n' +
+    'Those are about "some", "every chef", "people who". Nobody talks like that. Reply to the poster ' +
+    '("you"/"your") or react flatly to the thing itself. First person is allowed only for a reaction ' +
+    'in the moment, never for a claim about the owner\'s past. At most one option may be a general ' +
+    'statement, and only if it is funny or sharp enough to earn it.\n\n' +
     'Length: most replies are 3 to 15 words. At least one option must be under 6 words, because ' +
     'that is the length real people actually type and the one a model never risks. One option may ' +
     "be longer, but only if the extra words earn it. If a reply reads like a paragraph, it's wrong.\n\n" +
     'Type the way people type on a phone, not the way prose is edited. Fragments are good. A short ' +
     'reply does not need a full stop at the end. Do not make every option a neat, balanced, ' +
     'grammatically complete sentence, and do not give all five the same length or shape.\n\n' +
-    'Never do these — they are what makes a reply read as AI:\n' +
+    'Never do these — they are what makes a reply read as AI (except on the wins described above, ' +
+    'where congratulating is the whole point):\n' +
     '- Opening with a compliment or validation: "impressive", "love this", "that\'s a strong X", ' +
     '"great work", "so true", "this is gold", "well said", "congrats", "nice".\n' +
     '- The compliment-then-question combo ("nice work! how did you..."). It is the single most ' +
@@ -279,16 +324,17 @@ function replyCraftGuidance(): string {
     '"thanks for sharing", "as someone who...".\n' +
     '- Restating or summarising the tweet back at the person.\n' +
     '- Giving unsolicited advice or a lesson when the tweet was just someone sharing their day.\n' +
-    '- Ending every option with a question mark.\n\n' +
+    '- Asking a question at all, in any option.\n\n' +
     'Match the register of the tweet: a casual one-line personal post gets a casual one-line reply, not ' +
     'analysis. A serious or technical tweet can carry a real point.\n\n' +
     'Calibration, for shape only — never reuse this wording. For the tweet "I just hit my plank hold ' +
     'PR: 7 minutes":\n' +
     '- BAD: "impressive! curious how you progressively improved your plank time?"\n' +
     '- BAD: "that\'s a strong core you\'ve got there. have any other fitness goals in mind?"\n' +
+    '- BAD: "i never tried planks for that long, maybe i should" (invents the owner\'s life)\n' +
     '- GOOD: "7 minutes is longer than most people can sit still without their phone"\n' +
-    '- GOOD: "i tap out at 90 seconds and start negotiating with myself"\n' +
-    '- GOOD: "planks are the only exercise where doing nothing is the hard part"\n\n' +
+    '- GOOD: "planks are the only exercise where doing nothing is the hard part"\n' +
+    '- GOOD: "the last minute of that is pure spite"\n\n' +
     'Every reply must be a standalone tweet under 280 characters and sound like the owner typed it on ' +
     'their phone in five seconds.'
   );

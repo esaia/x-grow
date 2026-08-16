@@ -19,6 +19,14 @@ export default defineConfig({
        * `npm run check:bundle` before changing this.
        */
       minify: 'esbuild' as const,
+      /*
+       * Chrome discards `<link rel="modulepreload" crossorigin>` on a
+       * chrome-extension:// page ("cross-world extension resource mismatch")
+       * and logs it in the Errors panel — the chunk still loads via the normal
+       * import, so the hint is pure noise. Everything is served from local
+       * disk, so preloading buys nothing; don't emit the tags at all.
+       */
+      modulePreload: false,
     },
   }),
   manifest: {
