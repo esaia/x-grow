@@ -202,6 +202,7 @@ export async function sendPastComments(
   account: Account,
   rule: StoredRule,
   home: string,
+  actor: string,
 ): Promise<Response> {
   const form = await request.formData();
   const picks = form
@@ -232,6 +233,7 @@ export async function sendPastComments(
       username,
       text,
       keyword: "past comment",
+      actor,
     };
     try {
       await client.privateReply(commentId, dm);
@@ -259,7 +261,7 @@ export async function sendPastComments(
       }
     }
   }
-  log.info(`${account.network}.past_comments.sent`, { account: account.username, rule: rule.name, sent, failed: failures.length });
+  log.info(`${account.network}.past_comments.sent`, { account: account.username, rule: rule.name, sent, failed: failures.length, by: actor });
 
   const report = html`<p class="flash" role="status"><span class="dot ${failures.length || stopped ? "dot-bad" : "dot-on"}"></span>
   Sent ${sent} DM${sent === 1 ? "" : "s"}.${failures.length ? ` ${failures.length} failed.` : ""}${stopped ? " Stopped: nothing else was sent." : ""}</p>

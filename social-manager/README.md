@@ -124,7 +124,7 @@ Then, under **3. Configure webhooks** on the Unified login page:
 
 ### 5. Log in and connect your Instagram accounts
 
-Open **`https://<worker>/admin`** and log in with your `ADMIN_KEY`. Under
+Open **`https://<worker>/admin`** and log in with your `ADMIN_KEY` (email left empty). Then add yourself under **People** as an owner, so you can log in with your email from then on. Under
 **Instagram**, click **+ Connect account**, log in with Meta, and tick the
 Instagram account(s) to share. Repeat for accounts in other portfolios.
 Reconnecting an account replaces its token and keeps its auto-replies.
@@ -174,6 +174,18 @@ logs, and the same in the panel under **Recent activity**.
 > Access requirement, and `instagram_manage_comments` needs App Review.
 
 ---
+
+## People and logins
+
+- **Logging in:** everyone logs in with **email + password**. The `ADMIN_KEY` secret also logs in as an owner: leave the email empty. It's the way back in if every password is lost, and the Bearer key for `/admin/api`.
+- **People** (owners only): add a person with a first password, choose **Owner** or **Member**, and tick the accounts a member may see.
+  - Members see and edit only those accounts' auto-replies and past comments. They can't connect or disconnect accounts, manage people, or use the API.
+  - Owners see everything.
+- **My account:** anyone can change their own password. Changing it, or an owner resetting it, signs that person out everywhere. Removing someone ends their sessions immediately.
+- **Security:**
+  - Passwords are PBKDF2-SHA256 (60,000 rounds, per-user salt), minimum 8 characters. The round count is kept within the free plan's CPU limit.
+  - 10 wrong passwords block that login for 15 minutes.
+  - Rule edits show "Last changed by …", and DMs sent from Past comments show who sent them.
 
 ## Using the admin panel
 

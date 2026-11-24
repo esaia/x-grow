@@ -12,6 +12,7 @@
  *   GET  /admin/<network>/<id>/rules/<rule>/past            past comments (backfill)
  *   POST /admin/<network>/<id>/rules/<rule>/delete
  */
+import type { Viewer } from "../admin/auth";
 import { ago, compact, html, icon, page, redirect, when, type SafeHtml } from "../admin/html";
 import type { Env } from "../env";
 import { log } from "../log";
@@ -48,7 +49,7 @@ const FLASH: Record<string, string> = {
   disconnected: "Account disconnected. Its auto-replies are kept for when you reconnect it.",
 };
 
-export async function handlePanel(request: Request, url: URL, env: Env, network: Network): Promise<Response> {
+export async function handlePanel(request: Request, url: URL, env: Env, network: Network, viewer: Viewer): Promise<Response> {
   const parts = url.pathname.slice(baseOf(network).length).split("/").filter(Boolean).map(decodeURIComponent);
   const merged = url.searchParams.getAll("merged").filter(Boolean).slice(0, 10);
   const flash = FLASH[url.searchParams.get("msg") ?? ""]?.concat(
@@ -58,19 +59,26 @@ export async function handlePanel(request: Request, url: URL, env: Env, network:
   );
   const post = request.method === "POST";
 
-  if (parts.length === 0) return accountsPage(env, network, flash);
+  if (parts.length === 0) return accountsPage(env, network, viewer, flash);
 
-  const account = await getAccount(env, network, parts[0]);
+  let account = await getAccount(env, network, parts[0]);
+  // Members only reach the accounts an owner gave them; anything else looks like it doesn't exist.
+  if (account && !viewer.can(network, account.id)) account = null;
   if (!account) {
     // Links used to use the username (/admin/instagram/llamapresenter); send old bookmarks on.
-    const byName = (await listAccounts(env, network)).find((a) => a.username.toLowerCase() === parts[0].toLowerCase());
+    const byName = (await listAccounts(env, network)).find(
+      (a) => a.username.toLowerCase() === parts[0].toLowerCase() && viewer.can(network, a.id),
+    );
     if (byName) return redirect(url.pathname.replace(`/${parts[0]}`, `/${encodeURIComponent(byName.id)}`) + url.search);
   }
   if (!account) return notFound(network, `This ${NETWORKS[network].label} ${NETWORKS[network].accountNoun} isn't connected.`);
   const home = homeOf(account);
 
-  if (parts.length === 1 && !post) return accountPage(url, env, account, flash);
-  if (parts[1] === "disconnect" && parts.length === 2 && post) return disconnect(env, account);
+  if (parts.length === 1 && !post) return accountPage(url, env, account, viewer, flash);
+  if (parts[1] === "disconnect" && parts.length === 2 && post) {
+    if (!viewer.owner) return notFound(network, "Only owners can disconnect accounts.");
+    return disconnect(env, account);
+  }
 
   if (parts[1] === "rules") {
     if (parts[2] === "new" && parts.length === 3) {
@@ -80,7 +88,7 @@ export async function handlePanel(request: Request, url: URL, env: Env, network:
         const existing = await ruleForMedia(env, account, mediaId);
         if (existing) return redirect(`${home}/rules/${existing.id}`);
       }
-      return post ? saveNew(request, env, account, mediaId) : ruleEditor(env, account, { mediaId });
+      return post ? saveNew(request, env, account, mediaId, viewer) : ruleEditor(env, account, { mediaId });
     }
 
     const id = Number(parts[2]);
@@ -88,13 +96,13 @@ export async function handlePanel(request: Request, url: URL, env: Env, network:
     if (!rule) return notFound(network, "This auto-reply doesn't exist any more.");
 
     if (parts.length === 3 && !post) return ruleEditor(env, account, { rule, flash, tryText: url.searchParams.get("try") });
-    if (parts.length === 3 && post) return saveExisting(request, env, account, rule);
+    if (parts.length === 3 && post) return saveExisting(request, env, account, rule, viewer);
     if (parts[3] === "past" && parts.length === 4) {
-      return post ? sendPastComments(request, env, account, rule, home) : pastCommentsPage(env, account, rule, home);
+      return post ? sendPastComments(request, env, account, rule, home, viewer.name) : pastCommentsPage(env, account, rule, home);
     }
     if (parts[3] === "delete" && parts.length === 4 && post) {
       await deleteRule(env, account, rule.id);
-      log.info("admin.rule_deleted", { account: account.username, rule: rule.name });
+      log.info("admin.rule_deleted", { account: account.username, rule: rule.name, by: viewer.name });
       return redirect(`${home}?msg=deleted`);
     }
   }
@@ -114,9 +122,9 @@ function notFound(network: Network, message: string): Response {
 
 // ── Accounts ────────────────────────────────────────────────────────────────
 
-async function accountsPage(env: Env, network: Network, flash?: string): Promise<Response> {
+async function accountsPage(env: Env, network: Network, viewer: Viewer, flash?: string): Promise<Response> {
   const info = NETWORKS[network];
-  const accounts = await listAccounts(env, network);
+  const accounts = (await listAccounts(env, network)).filter((a) => viewer.can(network, a.id));
   const cards = await Promise.all(
     accounts.map(async (a) => {
       const [stats, tokenError] = await Promise.all([accountStats(env, a), checkToken(env, a)]);
@@ -138,15 +146,20 @@ async function accountsPage(env: Env, network: Network, flash?: string): Promise
     network === "facebook"
       ? "Each Page answers keyword comments on its posts with a Messenger DM, and replies under the comment."
       : "Each account answers keyword comments on its Reels with a DM, and replies under the comment.";
-  const connect = html`<a class="btn btn-accent" href="/connect/${network}">${icon.plus} Connect ${info.accountNoun}</a>`;
+  const connect = viewer.owner
+    ? html`<a class="btn btn-accent" href="/connect/${network}">${icon.plus} Connect ${info.accountNoun}</a>`
+    : "";
   return page(
     info.label,
     html`<div class="head"><div><h1>${info.label}</h1><p class="lede">${lede}</p></div>${connect}</div>
 ${accounts.length
       ? html`<div class="accounts">${cards}</div>
 <p class="small faint" style="margin-top:28px">Connecting again replaces the login and keeps the auto-replies.</p>`
-      : html`<div class="panel empty"><h2>Connect your first ${info.accountNoun}</h2>
-  <p>You'll log in with Meta and choose which ${info.label} ${info.accountNoun}s this tool can reply for.</p>${connect}</div>`}`,
+      : viewer.owner
+        ? html`<div class="panel empty"><h2>Connect your first ${info.accountNoun}</h2>
+  <p>You'll log in with Meta and choose which ${info.label} ${info.accountNoun}s this tool can reply for.</p>${connect}</div>`
+        : html`<div class="panel empty"><h2>No ${info.label} ${info.accountNoun}s for you yet</h2>
+  <p>An owner can give you access under People.</p></div>`}`,
     { flash, ...section(network) },
   );
 }
@@ -189,7 +202,7 @@ const permissionNote = (permission: string, noun: string, network: Network) => h
 
 // ── One account ─────────────────────────────────────────────────────────────
 
-async function accountPage(url: URL, env: Env, account: Account, flash?: string): Promise<Response> {
+async function accountPage(url: URL, env: Env, account: Account, viewer: Viewer, flash?: string): Promise<Response> {
   const home = homeOf(account);
   const info = NETWORKS[account.network];
   const base = baseOf(account.network);
@@ -257,7 +270,8 @@ ${mediaResult.ok
   ${activityList(events, home)}
 </section>
 
-<section class="section">
+${viewer.owner
+      ? html`<section class="section">
   <div class="section-head"><h2>Connection</h2></div>
   <div class="panel flat" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
     <p class="muted" style="margin:0;flex:1;min-width:240px">If replies start failing with "login expired", reconnect. Auto-replies and history are kept.</p>
@@ -267,7 +281,8 @@ ${mediaResult.ok
         <span>Stop all auto-replies for ${info.display(account.username)}?</span>
         <button class="btn btn-danger btn-sm">Disconnect</button></form></details>
   </div>
-</section>`,
+</section>`
+      : ""}`,
     { flash, ...section(account.network) },
   );
 }
@@ -336,6 +351,7 @@ function activityList(events: EventRow[], home: string): SafeHtml {
   <span class="event-icon${e.ok ? "" : " bad"}">${e.kind === "public_reply" ? icon.reply : icon.dm}</span>
   <div style="min-width:0"><div class="event-line">${line}</div>
     ${e.text ? html`<div class="event-text">“${e.text}”</div>` : ""}
+    ${e.actor ? html`<div class="small faint" style="margin-top:3px">Sent by ${e.actor} from past comments</div>` : ""}
     ${e.ok ? "" : html`<div class="event-err">${e.error ?? "Unknown error"}</div>`}</div>
   <time datetime="${e.at}" title="${when(e.at)}">${ago(e.at)}</time>
 </div>`;
@@ -473,6 +489,7 @@ async function ruleEditor(
       ? "Comments with a keyword get your link by DM, and a short reply under their comment."
       : "Messages with a keyword get your link by DM."}</p></div>
   ${rule ? html`<span class="chip">${sent} DMs sent</span>` : ""}</div>
+${rule?.updatedBy ? html`<p class="small faint" style="margin:-28px 0 28px">Last changed by ${rule.updatedBy} ${ago(rule.updatedAt)}</p>` : ""}
 
 <div class="editor">
 ${aside}
@@ -551,7 +568,7 @@ ${rule
   );
 }
 
-async function saveNew(request: Request, env: Env, account: Account, mediaId: string | null): Promise<Response> {
+async function saveNew(request: Request, env: Env, account: Account, mediaId: string | null, viewer: Viewer): Promise<Response> {
   const input = readForm(await request.formData());
   const result = validateRule(input, mediaId !== null);
   if (!result.ok) return ruleEditor(env, account, { mediaId, input, errors: result.errors, status: 400 });
@@ -569,16 +586,16 @@ async function saveNew(request: Request, env: Env, account: Account, mediaId: st
     }
     snapshot = { permalink: loaded.media.permalink, caption: loaded.media.caption?.slice(0, 500) };
   }
-  const id = await createRule(env, account, mediaId, result.rule, snapshot);
+  const id = await createRule(env, account, mediaId, result.rule, snapshot, viewer.name);
   log.info("admin.rule_created", { network: account.network, account: account.username, rule: result.rule.name, media_id: mediaId });
   return redirect(`${homeOf(account)}/rules/${id}?${flashQuery("created", result.merged)}`);
 }
 
-async function saveExisting(request: Request, env: Env, account: Account, rule: StoredRule): Promise<Response> {
+async function saveExisting(request: Request, env: Env, account: Account, rule: StoredRule, viewer: Viewer): Promise<Response> {
   const input = readForm(await request.formData());
   const result = validateRule(input, rule.mediaId !== null);
   if (!result.ok) return ruleEditor(env, account, { rule, input, errors: result.errors, status: 400 });
-  await updateRule(env, account, rule.id, result.rule);
+  await updateRule(env, account, rule.id, result.rule, viewer.name);
   log.info("admin.rule_updated", { account: account.username, rule: result.rule.name });
   return redirect(`${homeOf(account)}/rules/${rule.id}?${flashQuery("saved", result.merged)}`);
 }

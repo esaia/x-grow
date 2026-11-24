@@ -60,6 +60,8 @@ Don't "fix" any of this back to graph.instagram.com.
   - Its only script is `public/admin.js` (busy states on submit), allowed by `script-src 'self'`. No inline scripts or handlers, and every form must keep working without the script.
   - Every interpolation goes through the `html` tag. Use `raw()` only for strings built in code, never for data from Instagram or forms.
   - POSTs need the SameSite=Strict session cookie plus a same-origin `Origin`.
+- **Every panel route goes through `currentViewer`.** Members only reach accounts in `user_accounts` (`viewer.can`). Anything else must 404, not 403, so a member can't probe which accounts exist. Connect, disconnect, People and `/admin/api` are owner-only.
+- **Sessions are signed over the user's password salt.** That is what makes a password change or removal end sessions; keep it in the signature.
 - **Tokens are never logged, rendered or returned.** They travel in the `Authorization` header, and every call carries `appsecret_proof`.
 
 ## Admin panel design

@@ -1,38 +1,80 @@
 /**
- * Admin panel login. The password is ADMIN_KEY; a successful login sets a
- * signed session cookie for 30 days:
+ * Admin panel login and sessions.
  *
- *   sm_admin = <expiry ms>.<HMAC-SHA256(ADMIN_KEY, "admin-session:" + expiry)>
+ * People log in with email + password (users table). The ADMIN_KEY secret
+ * also logs in, as an owner with no email: leave the email empty. It is the
+ * way back in if every password is lost, and the `Authorization: Bearer`
+ * key for /admin/api/*.
  *
- * Nothing is stored server-side. Changing ADMIN_KEY invalidates every session.
- * The cookie is HttpOnly + Secure + SameSite=Strict and scoped to /admin,
- * and POSTs must also come from our own origin (CSRF).
+ * Session cookie, 30 days, nothing stored server-side:
  *
- * /admin/api/* additionally accepts `Authorization: Bearer <ADMIN_KEY>` for curl.
+ *   sm_admin = <user id>.<expiry ms>.<HMAC-SHA256(ADMIN_KEY, "admin-session:<id>:<expiry>:<stamp>")>
+ *
+ * `stamp` is the user's password salt ("key" for the admin key), so changing
+ * someone's password, or deleting them, ends their sessions at once; changing
+ * ADMIN_KEY ends everyone's. HttpOnly + Secure + SameSite=Strict, scoped to
+ * /admin; POSTs must also be same-origin (CSRF).
  */
 import { hmacHex, safeEqual } from "../crypto";
 import type { Env } from "../env";
 import { log } from "../log";
+import type { Network } from "../networks";
 import { MARK, html, page, redirect } from "./html";
+import {
+  accessKey,
+  clearFailures,
+  findUserByLogin,
+  getUser,
+  grantsFor,
+  normaliseLogin,
+  recordFailure,
+  tooManyFailures,
+  touchLogin,
+  verifyPassword,
+} from "./users";
 
 const COOKIE = "sm_admin";
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
+/** User id 0 = logged in with ADMIN_KEY. */
+const KEY_USER = 0;
 
-async function sign(key: string, expiry: number): Promise<string> {
-  return hmacHex(key, `admin-session:${expiry}`);
+/** Who is looking at the panel, and what they may touch. */
+export interface Viewer {
+  id: number;
+  name: string;
+  login: string | null;
+  owner: boolean;
+  can(network: Network, accountId: string): boolean;
 }
 
-export async function makeSession(key: string, now = Date.now()): Promise<string> {
+function keyViewer(): Viewer {
+  return { id: KEY_USER, name: "Admin key", login: null, owner: true, can: () => true };
+}
+
+async function sign(key: string, uid: number, expiry: number, stamp: string): Promise<string> {
+  return hmacHex(key, `admin-session:${uid}:${expiry}:${stamp}`);
+}
+
+export async function makeSession(key: string, uid: number, stamp: string, now = Date.now()): Promise<string> {
   const expiry = now + SESSION_MS;
-  return `${expiry}.${await sign(key, expiry)}`;
+  return `${uid}.${expiry}.${await sign(key, uid, expiry, stamp)}`;
 }
 
-export async function checkSession(key: string, value: string | null, now = Date.now()): Promise<boolean> {
-  const m = value?.match(/^(\d+)\.([0-9a-f]{64})$/);
-  if (!m) return false;
-  const expiry = Number(m[1]);
-  if (!(expiry > now)) return false;
-  return safeEqual(m[2], await sign(key, expiry));
+/** The user id a cookie is for, if its signature and expiry check out for that stamp. */
+export async function checkSession(
+  key: string,
+  value: string | null,
+  stampFor: (uid: number) => Promise<string | null>,
+  now = Date.now(),
+): Promise<number | null> {
+  const m = value?.match(/^(\d+)\.(\d+)\.([0-9a-f]{64})$/);
+  if (!m) return null;
+  const uid = Number(m[1]);
+  const expiry = Number(m[2]);
+  if (!(expiry > now)) return null;
+  const stamp = await stampFor(uid);
+  if (stamp === null) return null;
+  return (await safeEqual(m[3], await sign(key, uid, expiry, stamp))) ? uid : null;
 }
 
 function readCookie(request: Request, name: string): string | null {
@@ -43,11 +85,32 @@ function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-export async function isAdmin(request: Request, env: Env): Promise<boolean> {
-  if (!env.ADMIN_KEY) return false;
-  if (await checkSession(env.ADMIN_KEY, readCookie(request, COOKIE))) return true;
+/** The logged-in viewer, from the session cookie or a Bearer ADMIN_KEY; null if neither. */
+export async function currentViewer(request: Request, env: Env): Promise<Viewer | null> {
+  if (!env.ADMIN_KEY) return null;
   const header = request.headers.get("Authorization") ?? "";
-  return header.startsWith("Bearer ") && (await safeEqual(header.slice(7), env.ADMIN_KEY));
+  if (header.startsWith("Bearer ") && (await safeEqual(header.slice(7), env.ADMIN_KEY))) return keyViewer();
+
+  const cookie = readCookie(request, COOKIE);
+  if (!cookie) return null;
+  let user: Awaited<ReturnType<typeof getUser>> = null;
+  const uid = await checkSession(env.ADMIN_KEY, cookie, async (id) => {
+    if (id === KEY_USER) return "key";
+    user = await getUser(env, id);
+    return user?.pw_salt ?? null;
+  });
+  if (uid === null) return null;
+  if (uid === KEY_USER) return keyViewer();
+  const u = user!;
+  if (u.role === "owner") return { id: u.id, name: u.name, login: u.login, owner: true, can: () => true };
+  const grants = await grantsFor(env, u.id);
+  return {
+    id: u.id,
+    name: u.name,
+    login: u.login,
+    owner: false,
+    can: (network, accountId) => grants.has(accessKey(network, accountId)),
+  };
 }
 
 /**
@@ -67,21 +130,23 @@ export function sameOrigin(request: Request, url: URL): boolean {
 
 /** Only redirect back into the admin panel, never to another site. */
 function safeNext(next: string | null): string {
-  return next && /^\/admin(\/[\w\-./%?=&]*)?$/.test(next) && !next.startsWith("//") ? next : "/admin/instagram";
+  return next && /^\/admin(\/[\w\-./%?=&]*)?$/.test(next) && !next.startsWith("//") ? next : "/admin";
 }
 
-export function loginPage(url: URL, error?: string, status = 200): Response {
+export function loginPage(url: URL, error?: string, status = 200, email = ""): Response {
   const next = safeNext(url.searchParams.get("next"));
   return page(
     "Log in",
     html`<div class="login"><div class="panel">
   ${MARK}
   <h1><span class="marker">Social Manager</span></h1>
-  <p class="muted" style="margin:0 0 28px">Auto-replies for your Instagram accounts.</p>
+  <p class="muted" style="margin:0 0 28px">Auto-replies for your Instagram and Facebook accounts.</p>
   <form class="form" method="post" action="/admin/login?next=${encodeURIComponent(next)}">
+    <label class="field"><span>Email</span>
+      <input type="email" name="email" value="${email}" autocomplete="username" autofocus></label>
     <label class="${error ? "field has-error" : "field"}"><span>Password</span>
-      <input type="password" name="password" autocomplete="current-password" required autofocus>
-      ${error ? html`<span class="err">${error}</span>` : html`<span class="hint">The <code>ADMIN_KEY</code> secret.</span>`}
+      <input type="password" name="password" autocomplete="current-password" required>
+      ${error ? html`<span class="err">${error}</span>` : html`<span class="hint">Owner with the <code>ADMIN_KEY</code>? Leave the email empty.</span>`}
     </label>
     <button class="btn btn-accent btn-wide" data-pending="Logging in…" data-label="Log in">Log in</button>
   </form>
@@ -90,25 +155,52 @@ export function loginPage(url: URL, error?: string, status = 200): Response {
   );
 }
 
+const sessionCookie = (value: string, maxAge: number) =>
+  `${COOKIE}=${value}; Path=/admin; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Strict`;
+
 export async function handleLogin(request: Request, url: URL, env: Env): Promise<Response> {
   if (!env.ADMIN_KEY) return loginPage(url, "ADMIN_KEY is not set on the Worker.", 503);
   if (!sameOrigin(request, url)) return new Response("Forbidden", { status: 403 });
 
   const form = await request.formData();
+  const email = normaliseLogin(String(form.get("email") ?? ""));
   const password = String(form.get("password") ?? "");
-  if (!password || !(await safeEqual(password, env.ADMIN_KEY))) {
-    log.warn("admin.login_failed");
-    return loginPage(url, "That password isn't right.", 401);
+  const throttleKey = email || "admin-key";
+  const wrong = "That email and password don't match.";
+
+  if (await tooManyFailures(env, throttleKey)) {
+    log.warn("admin.login_throttled", { login: throttleKey });
+    return loginPage(url, "Too many wrong passwords. Wait 15 minutes, then try again.", 429, email);
   }
-  log.info("admin.login");
-  const session = await makeSession(env.ADMIN_KEY);
+
+  let uid: number | null = null;
+  let stamp = "";
+  if (!email) {
+    if (password && (await safeEqual(password, env.ADMIN_KEY))) {
+      uid = KEY_USER;
+      stamp = "key";
+    }
+  } else {
+    const user = await findUserByLogin(env, email);
+    if (user && (await verifyPassword(password, user))) {
+      uid = user.id;
+      stamp = user.pw_salt;
+      await touchLogin(env, user.id);
+    }
+  }
+
+  if (uid === null) {
+    await recordFailure(env, throttleKey);
+    log.warn("admin.login_failed", { login: email || "(admin key)" });
+    return loginPage(url, email ? wrong : "That isn't the admin key.", 401, email);
+  }
+  await clearFailures(env, throttleKey);
+  log.info("admin.login", { user_id: uid });
   return redirect(safeNext(url.searchParams.get("next")), {
-    "Set-Cookie": `${COOKIE}=${session}; Path=/admin; Max-Age=${SESSION_MS / 1000}; HttpOnly; Secure; SameSite=Strict`,
+    "Set-Cookie": sessionCookie(await makeSession(env.ADMIN_KEY, uid, stamp), SESSION_MS / 1000),
   });
 }
 
 export function handleLogout(): Response {
-  return redirect("/admin/login", {
-    "Set-Cookie": `${COOKIE}=; Path=/admin; Max-Age=0; HttpOnly; Secure; SameSite=Strict`,
-  });
+  return redirect("/admin/login", { "Set-Cookie": sessionCookie("", 0) });
 }

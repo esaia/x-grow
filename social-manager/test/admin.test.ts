@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { checkSession, makeSession, sameOrigin } from "../src/admin/auth";
+import { hashPassword, verifyPassword } from "../src/admin/users";
 import { html, raw } from "../src/admin/html";
 
 describe("html", () => {
@@ -22,21 +23,49 @@ describe("html", () => {
 
 describe("admin session", () => {
   const key = "k".repeat(48);
+  const stamps: Record<number, string | null> = { 0: "key", 7: "salt-a" };
+  const stampFor = async (uid: number) => stamps[uid] ?? null;
 
-  it("accepts its own cookie until it expires", async () => {
+  it("identifies the user until the cookie expires", async () => {
     const now = Date.now();
-    const s = await makeSession(key, now);
-    expect(await checkSession(key, s, now)).toBe(true);
-    expect(await checkSession(key, s, now + 31 * 24 * 3600 * 1000)).toBe(false);
+    const s = await makeSession(key, 7, "salt-a", now);
+    expect(await checkSession(key, s, stampFor, now)).toBe(7);
+    expect(await checkSession(key, s, stampFor, now + 31 * 24 * 3600 * 1000)).toBeNull();
   });
 
-  it("rejects a cookie signed with another key, a forged expiry, or garbage", async () => {
-    const s = await makeSession(key);
-    expect(await checkSession("other", s)).toBe(false);
-    const [, sig] = s.split(".");
-    expect(await checkSession(key, `${Date.now() + 10 ** 12}.${sig}`)).toBe(false);
-    expect(await checkSession(key, "nope")).toBe(false);
-    expect(await checkSession(key, null)).toBe(false);
+  it("ends a user's sessions when their password (salt) changes or they're removed", async () => {
+    const s = await makeSession(key, 7, "salt-a");
+    expect(await checkSession(key, s, async () => "salt-b")).toBeNull();
+    expect(await checkSession(key, s, async () => null)).toBeNull();
+  });
+
+  it("rejects another key, a forged user id or expiry, and garbage", async () => {
+    const s = await makeSession(key, 7, "salt-a");
+    expect(await checkSession("other", s, stampFor)).toBeNull();
+    const [, exp, sig] = s.split(".");
+    expect(await checkSession(key, `0.${exp}.${sig}`, stampFor)).toBeNull();
+    expect(await checkSession(key, `7.${Date.now() + 10 ** 12}.${sig}`, stampFor)).toBeNull();
+    expect(await checkSession(key, "nope", stampFor)).toBeNull();
+    expect(await checkSession(key, null, stampFor)).toBeNull();
+  });
+
+  it("supports the admin-key session (user 0)", async () => {
+    expect(await checkSession(key, await makeSession(key, 0, "key"), stampFor)).toBe(0);
+  });
+});
+
+describe("passwords", () => {
+  it("verifies the right password and rejects others", async () => {
+    const pw = await hashPassword("correct horse battery", undefined, 1000);
+    const user = { pw_hash: pw.hash, pw_salt: pw.salt, pw_iter: pw.iterations };
+    expect(await verifyPassword("correct horse battery", user)).toBe(true);
+    expect(await verifyPassword("correct horse batterY", user)).toBe(false);
+  });
+
+  it("salts every hash differently", async () => {
+    const [a, b] = await Promise.all([hashPassword("same", undefined, 1000), hashPassword("same", undefined, 1000)]);
+    expect(a.salt).not.toBe(b.salt);
+    expect(a.hash).not.toBe(b.hash);
   });
 });
 

@@ -13,8 +13,10 @@
  *
  * <network> is instagram or facebook (see NETWORKS in networks.ts).
  */
-import { handleLogin, handleLogout, isAdmin, loginPage, sameOrigin } from "./admin/auth";
-import { redirect } from "./admin/html";
+import { currentViewer, handleLogin, handleLogout, loginPage, sameOrigin, type Viewer } from "./admin/auth";
+import { VIEWER_SLOT, redirect, viewerNav } from "./admin/html";
+import { handleAccount, handleUsers } from "./admin/users-panel";
+import { trimFailures } from "./admin/users";
 import { handleApi } from "./autoreply/api";
 import { cleanup } from "./autoreply/db";
 import { handlePanel } from "./autoreply/panel";
@@ -57,8 +59,8 @@ export default {
 
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(
-      cleanup(env).then(
-        (removed) => log.info("cron.cleanup", { cron: controller.cron, removed }),
+      Promise.all([cleanup(env), trimFailures(env)]).then(
+        ([removed, loginFailures]) => log.info("cron.cleanup", { cron: controller.cron, removed, loginFailures }),
         (err) => log.error("cron.cleanup_failed", { error: String(err) }),
       ),
     );
@@ -71,19 +73,45 @@ async function admin(request: Request, url: URL, path: string, env: Env): Promis
 
   const parts = path.split("/").filter(Boolean); // ["admin", ...]
   const api = parts[1] === "api";
-  if (!(await isAdmin(request, env))) {
+  const viewer = await currentViewer(request, env);
+  if (!viewer) {
     if (api) return json({ error: "Unauthorized" }, 401);
     if (method !== "GET") return redirect("/admin/login");
     return redirect(`/admin/login?next=${encodeURIComponent(path + url.search)}`);
   }
   if (method !== "GET" && !sameOrigin(request, url)) return new Response("Forbidden", { status: 403 });
 
+  const res = await route(request, url, path, parts, api, env, viewer);
+  return withViewerNav(res, viewer, path);
+}
+
+async function route(
+  request: Request,
+  url: URL,
+  path: string,
+  parts: string[],
+  api: boolean,
+  env: Env,
+  viewer: Viewer,
+): Promise<Response> {
+  const method = request.method;
   if (path === "/admin/logout" && method === "POST") return handleLogout();
   if (path === "/admin") return redirect("/admin/instagram");
+  if (parts[1] === "users") return handleUsers(request, url, env, viewer);
+  if (path === "/admin/account") return handleAccount(request, url, env, viewer);
 
   const network = api ? parts[2] : parts[1];
   if (network && isNetwork(network)) {
-    return api ? handleApi(request, url, env, network) : handlePanel(request, url, env, network);
+    if (api) return viewer.owner ? handleApi(request, url, env, network) : json({ error: "Owners only" }, 403);
+    return handlePanel(request, url, env, network, viewer);
   }
   return api ? json({ error: "Not Found" }, 404) : new Response("Not Found", { status: 404 });
+}
+
+/** Pages are rendered without knowing who's looking; put their links in the nav here. */
+async function withViewerNav(res: Response, viewer: Viewer, path: string): Promise<Response> {
+  if (!res.headers.get("Content-Type")?.startsWith("text/html")) return res;
+  const body = await res.text();
+  if (!body.includes(VIEWER_SLOT)) return new Response(body, res);
+  return new Response(body.replace(VIEWER_SLOT, viewerNav(viewer, path)), res);
 }

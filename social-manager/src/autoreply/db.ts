@@ -90,6 +90,7 @@ interface RuleRow {
   caption: string | null;
   created_at: string;
   updated_at: string;
+  updated_by: string | null;
 }
 
 export interface StoredRule extends Rule {
@@ -97,6 +98,8 @@ export interface StoredRule extends Rule {
   caption: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Name of the person who last saved it, if known. */
+  updatedBy: string | null;
 }
 
 function toRule(r: RuleRow): StoredRule {
@@ -114,6 +117,7 @@ function toRule(r: RuleRow): StoredRule {
     caption: r.caption,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    updatedBy: r.updated_by,
   };
 }
 
@@ -151,12 +155,13 @@ export async function createRule(
   mediaId: string | null,
   rule: RuleFields,
   snapshot: { permalink?: string; caption?: string } = {},
+  by: string | null = null,
 ): Promise<number> {
   const t = now();
   const row = await env.DB.prepare(
     `INSERT INTO rules (network, account_id, media_id, name, keywords, link, dm, public_replies,
-       any_comment, enabled, permalink, caption, created_at, updated_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13) RETURNING id`,
+       any_comment, enabled, permalink, caption, created_at, updated_at, updated_by)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14) RETURNING id`,
   )
     .bind(
       a.network,
@@ -172,15 +177,22 @@ export async function createRule(
       snapshot.permalink ?? null,
       snapshot.caption ?? null,
       t,
+      by,
     )
     .first<{ id: number }>();
   return row!.id;
 }
 
-export async function updateRule(env: Env, a: Pick<Account, "network" | "id">, id: number, rule: RuleFields) {
+export async function updateRule(
+  env: Env,
+  a: Pick<Account, "network" | "id">,
+  id: number,
+  rule: RuleFields,
+  by: string | null = null,
+) {
   await env.DB.prepare(
     `UPDATE rules SET name = ?1, keywords = ?2, link = ?3, dm = ?4, public_replies = ?5,
-       any_comment = ?6, enabled = ?7, updated_at = ?8
+       any_comment = ?6, enabled = ?7, updated_at = ?8, updated_by = ?12
      WHERE id = ?9 AND network = ?10 AND account_id = ?11`,
   )
     .bind(
@@ -195,6 +207,7 @@ export async function updateRule(env: Env, a: Pick<Account, "network" | "id">, i
       id,
       a.network,
       a.id,
+      by,
     )
     .run();
 }
@@ -261,6 +274,8 @@ export interface EventInput {
   text?: string;
   keyword?: string;
   error?: string;
+  /** The person who triggered it by hand (past comments); empty for automatic replies. */
+  actor?: string;
 }
 
 export interface EventRow {
@@ -275,12 +290,13 @@ export interface EventRow {
   text: string | null;
   keyword: string | null;
   error: string | null;
+  actor: string | null;
 }
 
 export async function recordEvent(env: Env, e: EventInput) {
   await env.DB.prepare(
-    `INSERT INTO events (at, network, account_id, kind, ok, rule_id, media_id, username, text, keyword, error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (at, network, account_id, kind, ok, rule_id, media_id, username, text, keyword, error, actor)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       now(),
@@ -294,6 +310,7 @@ export async function recordEvent(env: Env, e: EventInput) {
       e.text ? e.text.slice(0, 200) : null,
       e.keyword ?? null,
       e.error ? e.error.slice(0, 500) : null,
+      e.actor ?? null,
     )
     .run();
 }

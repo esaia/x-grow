@@ -87,6 +87,7 @@ ${nav
     }>${n === "instagram" ? "Instagram" : "Facebook"}</a>`,
   )}
   <span class="grow"></span>
+  <!--sm:viewer-->
   <form method="post" action="/admin/logout"><button class="nav-link">Log out</button></form>
 </nav></header>`
     : ""}
@@ -106,6 +107,14 @@ ${body}
   // get no referrer (referrerpolicy on the <img> tags).
   headers.set("Referrer-Policy", "same-origin");
   return new Response(doc.value, { status: opts.status ?? 200, headers });
+}
+
+/** The viewer's links in the nav ("People" for owners, their name → My account). Filled in by the router. */
+export const VIEWER_SLOT = "<!--sm:viewer-->";
+export function viewerNav(v: { name: string; owner: boolean }, path: string): string {
+  const link = (href: string, label: string) =>
+    html`<a class="nav-link${path.startsWith(href) ? " is-current" : ""}" href="${href}">${label}</a>`.value;
+  return (v.owner ? link("/admin/users", "People") : "") + link("/admin/account", v.name);
 }
 
 export function redirect(location: string, headers: HeadersInit = {}): Response {
@@ -333,7 +342,7 @@ h2{margin:0;font-size:21px;font-weight:700;letter-spacing:-.025em}
 .field > span:first-child{font-size:14px;font-weight:600}
 .hint{color:var(--muted);font-size:13px;line-height:1.5}
 .hint code{font:inherit;color:var(--ink);background:#ffffff12;padding:1px 7px;border-radius:6px}
-input[type=text],input[type=url],input[type=password],textarea{width:100%;font:inherit;font-size:15px;color:var(--ink);background:var(--field);
+input[type=text],input[type=url],input[type=password],input[type=email],textarea{width:100%;font:inherit;font-size:15px;color:var(--ink);background:var(--field);
   border:1px solid var(--rule);border-radius:14px;padding:12px 15px;transition:border-color .15s,box-shadow .15s,background-color .15s}
 input::placeholder,textarea::placeholder{color:var(--faint)}
 input:hover,textarea:hover{background:var(--field-hover)}
