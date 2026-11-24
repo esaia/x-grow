@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { firstLine } from "../src/instagram/panel";
+import { firstLine } from "../src/autoreply/panel";
 
 describe("default auto-reply name", () => {
   it("cuts a long first line at a whole word", () => {

@@ -1,47 +1,56 @@
 /**
- * social-manager: one Worker, one folder per network under src/.
+ * social-manager: one Worker, one adapter per network (src/<network>/), one
+ * shared auto-reply engine and admin panel (src/autoreply/).
  *
- *   /admin                        admin panel (login: ADMIN_KEY)
- *   /admin/instagram/...          Instagram accounts, auto-replies, activity
- *   /admin/api/instagram/...      the same data as JSON, for curl
- *   GET  /connect/instagram       connect an Instagram account (Meta login)
- *   GET  /connect/instagram/callback
- *   GET  /webhooks/instagram      Meta's subscription check
- *   POST /webhooks/instagram      comment + DM events (signature-verified)
- *   cron (daily)                  housekeeping
+ *   /admin                            admin panel (login: ADMIN_KEY)
+ *   /admin/<network>/...              accounts, auto-replies, activity, past comments
+ *   /admin/api/<network>/...          the same data as JSON, for curl
+ *   GET  /connect/<network>           connect an account / Page (Meta login)
+ *   GET  /connect/<network>/callback
+ *   GET  /webhooks/<network>          Meta's subscription check
+ *   POST /webhooks/<network>          comment + DM events (signature-verified)
+ *   cron (daily)                      housekeeping
  *
- * A new network adds its own `/connect/<network>`, `/webhooks/<network>`,
- * `/admin/<network>` and `/admin/api/<network>` branches here.
+ * <network> is instagram or facebook (see NETWORKS in networks.ts).
  */
 import { handleLogin, handleLogout, isAdmin, loginPage, sameOrigin } from "./admin/auth";
 import { redirect } from "./admin/html";
+import { handleApi } from "./autoreply/api";
+import { cleanup } from "./autoreply/db";
+import { handlePanel } from "./autoreply/panel";
+import { finishConnect, startConnect } from "./connect";
 import type { Env } from "./env";
+import { processFacebook } from "./facebook/webhook";
 import { json } from "./http";
-import { handleInstagramApi } from "./instagram/admin";
-import { CALLBACK_PATH } from "./instagram/config";
-import { finishConnect, startConnect } from "./instagram/connect";
-import { cleanup } from "./instagram/db";
-import { handleInstagramPanel } from "./instagram/panel";
-import { receiveWebhook, verifySubscription } from "./instagram/webhook";
+import { processInstagram } from "./instagram/webhook";
 import { log } from "./log";
+import { isNetwork, type Network } from "./networks";
+import { receiveWebhook, verifySubscription } from "./webhooks";
+
+const PROCESS: Record<Network, (payload: unknown, env: Env) => Promise<void>> = {
+  instagram: processInstagram,
+  facebook: processFacebook,
+};
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     const method = request.method;
+    const [, first, network, rest] = path.split("/");
 
-    if (path === "/webhooks/instagram") {
-      if (method === "GET") return verifySubscription(url, env);
-      if (method === "POST") return receiveWebhook(request, env, ctx);
+    if (first === "webhooks" && network && isNetwork(network) && !rest) {
+      if (method === "GET") return verifySubscription(url, env, network);
+      if (method === "POST") return receiveWebhook(request, env, ctx, network, PROCESS[network]);
       return new Response("Method Not Allowed", { status: 405 });
     }
 
-    if (method === "GET" && path === "/connect/instagram") return startConnect(url, env);
-    if (method === "GET" && path === CALLBACK_PATH) return finishConnect(request, url, env);
+    if (first === "connect" && network && isNetwork(network) && method === "GET") {
+      if (!rest) return startConnect(url, env, network);
+      if (rest === "callback") return finishConnect(request, url, env, network);
+    }
 
-    if (path === "/admin" || path.startsWith("/admin/")) return admin(request, url, path, env);
-
+    if (first === "admin") return admin(request, url, path, env);
     if (path === "/") return redirect("/admin");
     return new Response("Not Found", { status: 404 });
   },
@@ -58,12 +67,10 @@ export default {
 
 async function admin(request: Request, url: URL, path: string, env: Env): Promise<Response> {
   const method = request.method;
-  if (path === "/admin/login") {
-    if (method === "POST") return handleLogin(request, url, env);
-    return loginPage(url);
-  }
+  if (path === "/admin/login") return method === "POST" ? handleLogin(request, url, env) : loginPage(url);
 
-  const api = path.startsWith("/admin/api/");
+  const parts = path.split("/").filter(Boolean); // ["admin", ...]
+  const api = parts[1] === "api";
   if (!(await isAdmin(request, env))) {
     if (api) return json({ error: "Unauthorized" }, 401);
     if (method !== "GET") return redirect("/admin/login");
@@ -73,9 +80,10 @@ async function admin(request: Request, url: URL, path: string, env: Env): Promis
 
   if (path === "/admin/logout" && method === "POST") return handleLogout();
   if (path === "/admin") return redirect("/admin/instagram");
-  if (path === "/admin/instagram" || path.startsWith("/admin/instagram/")) {
-    return handleInstagramPanel(request, url, env);
+
+  const network = api ? parts[2] : parts[1];
+  if (network && isNetwork(network)) {
+    return api ? handleApi(request, url, env, network) : handlePanel(request, url, env, network);
   }
-  if (path.startsWith("/admin/api/instagram/")) return handleInstagramApi(request, url, env);
   return api ? json({ error: "Not Found" }, 404) : new Response("Not Found", { status: 404 });
 }

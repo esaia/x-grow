@@ -2,14 +2,15 @@
 /**
  * Posts a signed fake webhook to the Worker, shaped like Meta's.
  *
- *   npm run webhook -- seed-account    once: fake account + example rule in local D1
+ *   npm run webhook -- seed-account    once: fake Instagram account + Facebook Page in local D1
+ *   npm run webhook -- comment "xmas" --network facebook   a Facebook Page comment
  *   npm run webhook -- comment "chrisstmas please 🎄"
  *   npm run webhook -- comment "hello" --media 17890000000000000 --user 111
  *   npm run webhook -- dm "xmas"
  *   npm run webhook -- verify          GET subscription check
  *   npm run webhook -- bad-signature   must come back 401
  *
- * Options: --url (default http://localhost:8787/webhooks/instagram), --media,
+ * Options: --network instagram|facebook, --url (default http://localhost:8787/webhooks/<network>), --media,
  * --user, --account (the connected account's IG id). Secrets come from
  * .dev.vars, or the environment (META_APP_SECRET, IG_VERIFY_TOKEN). Without
  * --user each run uses a new random commenter, so dedup
@@ -28,58 +29,92 @@ const vars = { ...readDevVars(`${root}/.dev.vars`), ...process.env };
 
 const [command = "comment", ...rest] = process.argv.slice(2);
 const opts = parseArgs(rest);
-const url = opts.url ?? "http://localhost:8787/webhooks/instagram";
-const igUserId = opts.account ?? "17841400000000000"; // the seed-account id
+const url = opts.url ?? `http://localhost:8787/webhooks/${opts.network ?? "instagram"}`;
+const IG_ID = "17841400000000000"; // seed-account ids
+const IG_MEDIA = "17890000000000000";
+const FB_PAGE = "100000000000001";
+const FB_POST = "100000000000001_200000000000002";
+const network = opts.network ?? "instagram";
+const igUserId = opts.account ?? (network === "facebook" ? FB_PAGE : IG_ID);
 const rand = () => String(Math.floor(Math.random() * 1e15)).padStart(15, "1");
 
 switch (command) {
   case "seed-account": {
-    // What /connect/instagram would store after a real login, plus one
-    // example auto-reply, written to the local D1 that `npm run dev` reads.
+    // What /connect/<network> would store after a real login, plus one example
+    // auto-reply each, written to the local D1 that `npm run dev` reads.
     // Run `npm run db:migrate:local` first.
-    const username = opts.username ?? "llamapresenter";
     const now = new Date().toISOString();
     const q = (v) => `'${String(v).replaceAll("'", "''")}'`;
+    const rule = (network, account, media, name) =>
+      `INSERT OR IGNORE INTO rules (network, account_id, media_id, name, keywords, link, dm, public_replies, any_comment, enabled, created_at, updated_at)
+       VALUES (${q(network)}, ${q(account)}, ${q(media)}, ${q(name)}, ${q(JSON.stringify(["christmas", "xmas"]))},
+       'https://example.com/christmas', ${q("Here's your link 🎄 {link}")}, ${q(JSON.stringify(["Sent! 🎄 Check your messages 📩"]))}, 0, 1, ${q(now)}, ${q(now)});`;
     const sql = [
-      `INSERT OR REPLACE INTO ig_accounts (id, username, token, connected_at) VALUES (${q(igUserId)}, ${q(username)}, 'local-fake-token', ${q(now)});`,
-      `INSERT OR IGNORE INTO ig_rules (account_id, media_id, name, keywords, link, dm, public_replies, any_comment, enabled, created_at, updated_at)
-       VALUES (${q(igUserId)}, '17890000000000000', 'Silent Night (example)', ${q(JSON.stringify(["christmas", "xmas"]))},
-       'https://example.com/christmas', ${q("Here's your link 🎄 {link}")}, ${q(JSON.stringify(["Sent! 🎄 Check your message requests 📩"]))}, 0, 1, ${q(now)}, ${q(now)});`,
+      `INSERT OR REPLACE INTO accounts (network, id, username, token, connected_at) VALUES ('instagram', ${q(IG_ID)}, 'llamapresenter', 'local-fake-token', ${q(now)});`,
+      `INSERT OR REPLACE INTO accounts (network, id, username, token, connected_at) VALUES ('facebook', ${q(FB_PAGE)}, 'LlamaPresenter', 'local-fake-token', ${q(now)});`,
+      rule("instagram", IG_ID, IG_MEDIA, "Silent Night (example)"),
+      rule("facebook", FB_PAGE, FB_POST, "Christmas post (example)"),
     ].join("\n");
     execFileSync("npx", ["wrangler", "d1", "execute", "social-manager", "--local", "--command", sql], {
       cwd: root,
       stdio: ["ignore", "ignore", "inherit"],
     });
-    console.log(`Seeded local account @${username} (${igUserId}) with an example auto-reply on media 17890000000000000.`);
+    console.log(`Seeded @llamapresenter (Instagram ${IG_ID}) and the LlamaPresenter Page (Facebook ${FB_PAGE}), each with an example auto-reply.`);
     break;
   }
 
   case "comment":
-    await post({
-      object: "instagram",
-      entry: [
-        {
-          id: igUserId,
-          time: Math.floor(Date.now() / 1000),
-          changes: [
-            {
-              field: "comments",
-              value: {
-                comment_id: `179${rand()}`, // Unified Login field name
-                text: opts._[0] ?? "chrisstmas please 🎄",
-                from: { id: opts.user ?? `55${rand()}`, username: "test_commenter" },
-                media: { id: opts.media ?? "17890000000000000", media_product_type: "REELS" },
+    await post(
+      network === "facebook"
+        ? {
+            object: "page",
+            entry: [
+              {
+                id: igUserId,
+                time: Math.floor(Date.now() / 1000),
+                changes: [
+                  {
+                    field: "feed",
+                    value: {
+                      item: "comment",
+                      verb: "add",
+                      comment_id: `${FB_POST.split("_")[1]}_${rand()}`,
+                      post_id: opts.media ?? FB_POST,
+                      from: { id: opts.user ?? `77${rand()}`, name: "Test Commenter" },
+                      message: opts._[0] ?? "chrisstmas please 🎄",
+                      created_time: Math.floor(Date.now() / 1000),
+                    },
+                  },
+                ],
               },
-            },
-          ],
-        },
-      ],
-    });
+            ],
+          }
+        : {
+            object: "instagram",
+            entry: [
+              {
+                id: igUserId,
+                time: Math.floor(Date.now() / 1000),
+                changes: [
+                  {
+                    field: "comments",
+                    value: {
+                      comment_id: `179${rand()}`, // Unified Login field name
+                      text: opts._[0] ?? "chrisstmas please 🎄",
+                      from: { id: opts.user ?? `55${rand()}`, username: "test_commenter" },
+                      media: { id: opts.media ?? IG_MEDIA, media_product_type: "REELS" },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+    );
     break;
 
   case "dm":
     await post({
-      object: "instagram",
+      object: network === "facebook" ? "page" : "instagram",
       entry: [
         {
           id: igUserId,

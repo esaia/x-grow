@@ -1,25 +1,29 @@
 /**
- * Instagram pages of the admin panel (auth is checked in index.ts).
+ * The admin pages for one network's auto-replies (auth is checked in index.ts).
+ * Every network gets the same pages; NETWORKS supplies the words and the client.
  *
- *   GET  /admin/instagram                               connected accounts
- *   GET  /admin/instagram/<user>[?after=]               auto-replies, Reels grid, activity
- *   POST /admin/instagram/<user>/disconnect
- *   GET  /admin/instagram/<user>/rules/new[?media=<id>] new auto-reply (for a Reel, or DM-only)
- *   POST /admin/instagram/<user>/rules/new[?media=<id>]
- *   GET  /admin/instagram/<user>/rules/<id>[?try=…]     edit (+ test a comment)
- *   POST /admin/instagram/<user>/rules/<id>
- *   POST /admin/instagram/<user>/rules/<id>/delete
+ *   GET  /admin/<network>                                   connected accounts / Pages
+ *   GET  /admin/<network>/<id>[?after=]                     auto-replies, posts grid, activity
+ *   POST /admin/<network>/<id>/disconnect
+ *   GET  /admin/<network>/<id>/rules/new[?media=<post id>]  new auto-reply (for a post, or DM-only)
+ *   POST /admin/<network>/<id>/rules/new[?media=<post id>]
+ *   GET  /admin/<network>/<id>/rules/<rule>[?try=…]         edit (+ test a comment)
+ *   POST /admin/<network>/<id>/rules/<rule>
+ *   GET  /admin/<network>/<id>/rules/<rule>/past            past comments (backfill)
+ *   POST /admin/<network>/<id>/rules/<rule>/delete
  */
-import { matchComment, validateRule, LIMITS, type RuleInput } from "../autoreply/rules";
 import { ago, compact, html, icon, page, redirect, when, type SafeHtml } from "../admin/html";
 import type { Env } from "../env";
 import { log } from "../log";
+import { GraphError } from "../meta";
+import { NETWORKS, type Network, type Post } from "../networks";
+import { pastCommentsPage, sendPastComments } from "./backfill";
 import {
   accountStats,
   createRule,
   deleteAccount,
   deleteRule,
-  findAccountByUsername,
+  getAccount,
   getRule,
   listAccounts,
   listRules,
@@ -31,11 +35,11 @@ import {
   type EventRow,
   type StoredRule,
 } from "./db";
-import { pastCommentsPage, sendPastComments } from "./backfill";
-import { GraphError, createGraph, type Graph, type MediaItem } from "./graph";
+import { matchComment, validateRule, LIMITS, type RuleInput } from "./rules";
 
-const BASE = "/admin/instagram";
-const SECTION = { section: "instagram" };
+const baseOf = (n: Network) => `/admin/${n}`;
+const section = (n: Network) => ({ section: n });
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 const FLASH: Record<string, string> = {
   saved: "Saved. It's live now.",
@@ -44,8 +48,8 @@ const FLASH: Record<string, string> = {
   disconnected: "Account disconnected. Its auto-replies are kept for when you reconnect it.",
 };
 
-export async function handleInstagramPanel(request: Request, url: URL, env: Env): Promise<Response> {
-  const parts = url.pathname.slice(BASE.length).split("/").filter(Boolean).map(decodeURIComponent);
+export async function handlePanel(request: Request, url: URL, env: Env, network: Network): Promise<Response> {
+  const parts = url.pathname.slice(baseOf(network).length).split("/").filter(Boolean).map(decodeURIComponent);
   const merged = url.searchParams.getAll("merged").filter(Boolean).slice(0, 10);
   const flash = FLASH[url.searchParams.get("msg") ?? ""]?.concat(
     merged.length
@@ -54,10 +58,15 @@ export async function handleInstagramPanel(request: Request, url: URL, env: Env)
   );
   const post = request.method === "POST";
 
-  if (parts.length === 0) return accountsPage(env, flash);
+  if (parts.length === 0) return accountsPage(env, network, flash);
 
-  const account = await findAccountByUsername(env, parts[0]);
-  if (!account) return notFound(`@${parts[0]} isn't connected.`);
+  const account = await getAccount(env, network, parts[0]);
+  if (!account) {
+    // Links used to use the username (/admin/instagram/llamapresenter); send old bookmarks on.
+    const byName = (await listAccounts(env, network)).find((a) => a.username.toLowerCase() === parts[0].toLowerCase());
+    if (byName) return redirect(url.pathname.replace(`/${parts[0]}`, `/${encodeURIComponent(byName.id)}`) + url.search);
+  }
+  if (!account) return notFound(network, `This ${NETWORKS[network].label} ${NETWORKS[network].accountNoun} isn't connected.`);
   const home = homeOf(account);
 
   if (parts.length === 1 && !post) return accountPage(url, env, account, flash);
@@ -68,15 +77,15 @@ export async function handleInstagramPanel(request: Request, url: URL, env: Env)
       const mediaId = url.searchParams.get("media");
       if (mediaId) {
         // One auto-reply per Reel: if it exists, edit that instead.
-        const existing = await ruleForMedia(env, account.id, mediaId);
+        const existing = await ruleForMedia(env, account, mediaId);
         if (existing) return redirect(`${home}/rules/${existing.id}`);
       }
       return post ? saveNew(request, env, account, mediaId) : ruleEditor(env, account, { mediaId });
     }
 
     const id = Number(parts[2]);
-    const rule = Number.isInteger(id) ? await getRule(env, account.id, id) : null;
-    if (!rule) return notFound("This auto-reply doesn't exist any more.");
+    const rule = Number.isInteger(id) ? await getRule(env, account, id) : null;
+    if (!rule) return notFound(network, "This auto-reply doesn't exist any more.");
 
     if (parts.length === 3 && !post) return ruleEditor(env, account, { rule, flash, tryText: url.searchParams.get("try") });
     if (parts.length === 3 && post) return saveExisting(request, env, account, rule);
@@ -84,35 +93,36 @@ export async function handleInstagramPanel(request: Request, url: URL, env: Env)
       return post ? sendPastComments(request, env, account, rule, home) : pastCommentsPage(env, account, rule, home);
     }
     if (parts[3] === "delete" && parts.length === 4 && post) {
-      await deleteRule(env, account.id, rule.id);
+      await deleteRule(env, account, rule.id);
       log.info("admin.rule_deleted", { account: account.username, rule: rule.name });
       return redirect(`${home}?msg=deleted`);
     }
   }
-  return notFound("There's no page at this address.");
+  return notFound(network, "There's no page at this address.");
 }
 
-const homeOf = (a: Account) => `${BASE}/${encodeURIComponent(a.username)}`;
+const homeOf = (a: Account) => `${baseOf(a.network)}/${encodeURIComponent(a.id)}`;
 
-function notFound(message: string): Response {
+function notFound(network: Network, message: string): Response {
   return page(
     "Not found",
     html`<div class="head"><div><h1>Not found</h1><p class="lede">${message}</p></div></div>
-<a class="btn btn-ghost" href="${BASE}">${icon.arrowLeft} Instagram accounts</a>`,
-    { status: 404, ...SECTION },
+<a class="btn btn-ghost" href="${baseOf(network)}">${icon.arrowLeft} ${NETWORKS[network].label}</a>`,
+    { status: 404, ...section(network) },
   );
 }
 
 // ── Accounts ────────────────────────────────────────────────────────────────
 
-async function accountsPage(env: Env, flash?: string): Promise<Response> {
-  const accounts = await listAccounts(env);
+async function accountsPage(env: Env, network: Network, flash?: string): Promise<Response> {
+  const info = NETWORKS[network];
+  const accounts = await listAccounts(env, network);
   const cards = await Promise.all(
     accounts.map(async (a) => {
-      const [stats, tokenError] = await Promise.all([accountStats(env, a.id), checkToken(env, a)]);
+      const [stats, tokenError] = await Promise.all([accountStats(env, a), checkToken(env, a)]);
       return html`<a class="panel account" href="${homeOf(a)}">
   <div class="who"><span class="avatar">${a.username.slice(0, 1).toUpperCase()}</span>
-    <div><b>@${a.username}</b><span class="small muted">${stats?.last_activity ? `Last reply ${ago(stats.last_activity)}` : "No replies yet"}</span></div></div>
+    <div><b>${info.display(a.username)}</b><span class="small muted">${stats?.last_activity ? `Last reply ${ago(stats.last_activity)}` : "No replies yet"}</span></div></div>
   <div class="figures">
     <div class="figure"><b>${stats?.active_rules ?? 0}</b><span>active auto-replies</span></div>
     <div class="figure"><b>${stats?.dms_7d ?? 0}</b><span>DMs sent this week</span></div>
@@ -124,25 +134,27 @@ async function accountsPage(env: Env, flash?: string): Promise<Response> {
     }),
   );
 
+  const lede =
+    network === "facebook"
+      ? "Each Page answers keyword comments on its posts with a Messenger DM, and replies under the comment."
+      : "Each account answers keyword comments on its Reels with a DM, and replies under the comment.";
+  const connect = html`<a class="btn btn-accent" href="/connect/${network}">${icon.plus} Connect ${info.accountNoun}</a>`;
   return page(
-    "Instagram",
-    html`<div class="head"><div><h1>Instagram</h1>
-  <p class="lede">Each account answers keyword comments on its Reels with a DM, and replies under the comment.</p></div>
-  <a class="btn btn-accent" href="/connect/instagram">${icon.plus} Connect account</a></div>
+    info.label,
+    html`<div class="head"><div><h1>${info.label}</h1><p class="lede">${lede}</p></div>${connect}</div>
 ${accounts.length
       ? html`<div class="accounts">${cards}</div>
-<p class="small faint" style="margin-top:28px">Connecting an account again replaces its login and keeps its auto-replies.</p>`
-      : html`<div class="panel empty"><h2>Connect your first account</h2>
-  <p>You'll log in with Meta and choose which Instagram accounts this tool can reply for.</p>
-  <a class="btn btn-accent" href="/connect/instagram">${icon.plus} Connect account</a></div>`}`,
-    { flash, ...SECTION },
+<p class="small faint" style="margin-top:28px">Connecting again replaces the login and keeps the auto-replies.</p>`
+      : html`<div class="panel empty"><h2>Connect your first ${info.accountNoun}</h2>
+  <p>You'll log in with Meta and choose which ${info.label} ${info.accountNoun}s this tool can reply for.</p>${connect}</div>`}`,
+    { flash, ...section(network) },
   );
 }
 
 /** null if the token works, else the error message. */
 async function checkToken(env: Env, a: Account): Promise<string | null> {
   try {
-    await createGraph(env, a.token).profile(a.id);
+    await NETWORKS[a.network].client(env, a).check();
     return null;
   } catch (err) {
     return errMessage(err);
@@ -151,91 +163,77 @@ async function checkToken(env: Env, a: Account): Promise<string | null> {
 
 async function disconnect(env: Env, account: Account): Promise<Response> {
   try {
-    await createGraph(env, account.token).unsubscribeWebhooks(account.id);
+    await NETWORKS[account.network].client(env, account).unsubscribe();
   } catch (err) {
     log.warn("admin.unsubscribe_failed", { account: account.username, error: String(err) });
   }
-  await deleteAccount(env, account.id);
-  log.info("admin.account_disconnected", { account: account.username });
-  return redirect(`${BASE}?msg=disconnected`);
+  await deleteAccount(env, account.network, account.id);
+  log.info("admin.account_disconnected", { network: account.network, account: account.username });
+  return redirect(`${baseOf(account.network)}?msg=disconnected`);
 }
 
-// ── Views (need instagram_manage_insights) ──────────────────────────────────
+// ── Stats ─────────────────────────────────────────────────────────────────
 
-interface Views {
-  byId: Map<string, number>;
-  /** The token lacks instagram_manage_insights. */
-  missingPermission: boolean;
-}
-
-/** One insights call per post, in parallel; one broken post doesn't hide the rest. */
-async function loadViews(graph: Graph, ids: string[]): Promise<Views> {
-  const results = await Promise.allSettled(ids.map((id) => graph.views(id)));
-  const byId = new Map<string, number>();
-  let permissionErrors = 0;
-  results.forEach((r, i) => {
-    if (r.status === "fulfilled" && r.value !== null) byId.set(ids[i], r.value);
-    else if (r.status === "rejected" && r.reason instanceof GraphError && r.reason.isPermissionError) permissionErrors++;
-  });
-  return { byId, missingPermission: byId.size === 0 && permissionErrors > 0 };
-}
-
-function statsRow(m: MediaItem, views: number | undefined, viewsKnown: boolean): SafeHtml {
+function statsRow(p: Post, likesLabel: string): SafeHtml {
   return html`<div class="stats-row">
-  <span title="Views">${icon.play}${viewsKnown ? compact(views) : html`<span class="na">–</span>`}</span>
-  <span title="Likes">${icon.heart}${compact(m.like_count)}</span>
-  <span title="Comments">${icon.comment}${compact(m.comments_count)}</span>
+  ${p.views === undefined ? "" : html`<span title="Views">${icon.play}${p.views === null ? html`<span class="na">–</span>` : compact(p.views)}</span>`}
+  <span title="${likesLabel}">${icon.heart}${compact(p.likes)}</span>
+  <span title="Comments">${icon.comment}${compact(p.comments)}</span>
 </div>`;
 }
 
-const permissionNote = html`<p class="small muted" style="margin:0">Views need the <b>instagram_manage_insights</b> permission:
-add it under <i>Edit permissions</i> in your Meta login configuration, then reconnect the account.</p>`;
+const permissionNote = (permission: string, noun: string, network: Network) => html`<p class="small muted" style="margin:0">Views need the
+<b>${permission}</b> permission: add it to the app and to your Meta login configuration, then reconnect the ${noun}.${
+  network === "facebook" ? " Facebook also only reports views for Pages with 100 or more likes." : ""
+}</p>`;
 
 // ── One account ─────────────────────────────────────────────────────────────
 
 async function accountPage(url: URL, env: Env, account: Account, flash?: string): Promise<Response> {
   const home = homeOf(account);
+  const info = NETWORKS[account.network];
+  const base = baseOf(account.network);
   const after = url.searchParams.get("after") ?? undefined;
-  const graph = createGraph(env, account.token);
+  const client = info.client(env, account);
 
   const [rules, counts, events, mediaResult] = await Promise.all([
-    listRules(env, account.id),
-    sentCountsByRule(env, account.id),
-    recentEvents(env, account.id),
-    graph.listMedia(account.id, after).then(
+    listRules(env, account),
+    sentCountsByRule(env, account),
+    recentEvents(env, account),
+    client.posts(after).then(
       (r) => ({ ok: true as const, r }),
       (err: unknown) => ({ ok: false as const, err }),
     ),
   ]);
-  const media = mediaResult.ok ? mediaResult.r.data : [];
-  const views = await loadViews(graph, media.map((m) => m.id));
+  const media = mediaResult.ok ? mediaResult.r.items : [];
+  const likesLabel = account.network === "facebook" ? "Reactions" : "Likes";
   const mediaById = new Map(media.map((m) => [m.id, m]));
   const byMedia = new Map(rules.filter((r) => r.mediaId).map((r) => [r.mediaId!, r]));
 
   const graphAlert = mediaResult.ok
     ? ""
-    : html`<div class="alert"><b>Couldn't load posts from Instagram.</b> ${errMessage(mediaResult.err)}
+    : html`<div class="alert"><b>Couldn't load posts from ${info.label}.</b> ${errMessage(mediaResult.err)}
   ${mediaResult.err instanceof GraphError && mediaResult.err.isAuthError
-        ? html` <a href="/connect/instagram">Reconnect @${account.username}</a> to fix it.`
+        ? html` <a href="/connect/${account.network}">Reconnect ${info.display(account.username)}</a> to fix it.`
         : ""}</div>`;
 
   const rulesList = rules.length
-    ? html`<div class="list">${rules.map((r) => ruleRow(home, r, counts, r.mediaId ? mediaById.get(r.mediaId) : undefined))}</div>`
+    ? html`<div class="list">${rules.map((r) => ruleRow(home, r, counts, r.mediaId ? mediaById.get(r.mediaId) : undefined, info.postNoun))}</div>`
     : html`<div class="panel empty"><h2>No auto-replies yet</h2>
-  <p>Pick a Reel below to answer its comments, or add a keyword that answers DMs.</p></div>`;
+  <p>Pick a ${info.postNoun} below to answer its comments, or add a keyword that answers DMs.</p></div>`;
 
   const pager =
-    mediaResult.ok && (after || mediaResult.r.paging?.next)
+    mediaResult.ok && (after || mediaResult.r.after)
       ? html`<div class="pager">${after ? html`<a class="btn btn-ghost btn-sm" href="${home}">${icon.arrowLeft} Newest</a>` : ""}
-  ${mediaResult.r.paging?.next && mediaResult.r.paging.cursors?.after
-          ? html`<a class="btn btn-ghost btn-sm" href="${home}?after=${mediaResult.r.paging.cursors.after}">Older posts</a>`
+  ${mediaResult.r.after
+          ? html`<a class="btn btn-ghost btn-sm" href="${home}?after=${mediaResult.r.after}">Older posts</a>`
           : ""}</div>`
       : "";
 
   return page(
-    `@${account.username}`,
-    html`<a class="crumb" href="${BASE}">${icon.arrowLeft} Instagram</a>
-<div class="head"><div><h1>@${account.username}</h1>
+    info.display(account.username),
+    html`<a class="crumb" href="${base}">${icon.arrowLeft} ${info.label}</a>
+<div class="head"><div><h1>${info.display(account.username)}</h1>
   <p class="lede">Connected ${when(account.connected_at)}.</p></div>
   <a class="btn btn-ghost" href="${home}/rules/new">${icon.plus} DM keyword</a></div>
 ${graphAlert}
@@ -247,9 +245,9 @@ ${graphAlert}
 
 ${mediaResult.ok
       ? html`<section class="section">
-  <div class="section-head"><h2>Reels and posts</h2><p>Choose one to set up or change its auto-reply.</p></div>
-  ${views.missingPermission ? html`<div style="margin:-4px 0 20px">${permissionNote}</div>` : ""}
-  <div class="reels">${media.map((m) => reelCard(home, m, byMedia.get(m.id), counts, views))}</div>
+  <div class="section-head"><h2>${info.postsTitle}</h2><p>Choose one to set up or change its auto-reply.</p></div>
+  ${mediaResult.r.viewsNeedPermission ? html`<div style="margin:-4px 0 20px">${permissionNote(info.viewsPermission, info.accountNoun, account.network)}</div>` : ""}
+  <div class="reels">${media.map((m) => reelCard(home, m, byMedia.get(m.id), counts, likesLabel))}</div>
   ${pager}
 </section>`
       : ""}
@@ -263,20 +261,19 @@ ${mediaResult.ok
   <div class="section-head"><h2>Connection</h2></div>
   <div class="panel flat" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
     <p class="muted" style="margin:0;flex:1;min-width:240px">If replies start failing with "login expired", reconnect. Auto-replies and history are kept.</p>
-    <a class="btn btn-ghost btn-sm" href="/connect/instagram">Reconnect</a>
+    <a class="btn btn-ghost btn-sm" href="/connect/${account.network}">Reconnect</a>
     <details class="danger"><summary>Disconnect</summary>
       <form method="post" action="${home}/disconnect" class="confirm">
-        <span>Stop all auto-replies for @${account.username}?</span>
+        <span>Stop all auto-replies for ${info.display(account.username)}?</span>
         <button class="btn btn-danger btn-sm">Disconnect</button></form></details>
   </div>
 </section>`,
-    { flash, ...SECTION },
+    { flash, ...section(account.network) },
   );
 }
 
-function thumbOf(m: MediaItem | undefined): string | undefined {
-  if (!m) return undefined;
-  return m.thumbnail_url ?? (m.media_type === "VIDEO" ? undefined : m.media_url);
+function thumbOf(m: Post | undefined): string | undefined {
+  return m?.thumbnail;
 }
 
 function keywordsOf(r: StoredRule): SafeHtml {
@@ -285,7 +282,7 @@ function keywordsOf(r: StoredRule): SafeHtml {
     : html`<div class="kw">${r.keywords.map((k) => html`<span>${k}</span>`)}</div>`;
 }
 
-function ruleRow(home: string, r: StoredRule, counts: Map<number, number>, m: MediaItem | undefined): SafeHtml {
+function ruleRow(home: string, r: StoredRule, counts: Map<number, number>, m: Post | undefined, postNoun: string): SafeHtml {
   const thumb = thumbOf(m);
   return html`<a class="rule-row" href="${home}/rules/${r.id}">
   ${r.mediaId
@@ -294,7 +291,7 @@ function ruleRow(home: string, r: StoredRule, counts: Map<number, number>, m: Me
         : html`<span class="rule-thumb"></span>`
       : html`<span class="rule-thumb dm">${icon.dm}</span>`}
   <div style="min-width:0"><div class="rule-name">${r.name}</div>
-    <div class="rule-sub">${r.mediaId ? "Reel comments and DMs" : "DMs only"}</div></div>
+    <div class="rule-sub">${r.mediaId ? `${cap(postNoun)} comments and DMs` : "DMs only"}</div></div>
   ${keywordsOf(r)}
   <div class="count">${counts.get(r.id) ?? 0}<small>DMs sent</small></div>
   ${r.enabled
@@ -303,7 +300,7 @@ function ruleRow(home: string, r: StoredRule, counts: Map<number, number>, m: Me
 </a>`;
 }
 
-function reelCard(home: string, m: MediaItem, rule: StoredRule | undefined, counts: Map<number, number>, views: Views): SafeHtml {
+function reelCard(home: string, m: Post, rule: StoredRule | undefined, counts: Map<number, number>, likesLabel: string): SafeHtml {
   const href = rule ? `${home}/rules/${rule.id}` : `${home}/rules/new?media=${encodeURIComponent(m.id)}`;
   const img = thumbOf(m);
   const live = rule?.enabled;
@@ -315,7 +312,7 @@ function reelCard(home: string, m: MediaItem, rule: StoredRule | undefined, coun
   return html`<a class="reel${live ? " is-live" : ""}" href="${href}">
   <div class="phone">
     ${img ? html`<img src="${img}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}
-    <div class="shade">${status ? html`<div>${status}</div>` : ""}${statsRow(m, views.byId.get(m.id), !views.missingPermission)}</div>
+    <div class="shade">${status ? html`<div>${status}</div>` : ""}${statsRow(m, likesLabel)}</div>
     <div class="tap"><span>${rule ? "Edit auto-reply" : "Set up auto-reply"}</span></div>
   </div>
   <div class="cap">${m.caption ?? "No caption"}</div>
@@ -387,10 +384,8 @@ function readForm(form: FormData): RuleInput {
 }
 
 async function loadMedia(env: Env, account: Account, mediaId: string) {
-  const graph = createGraph(env, account.token);
   try {
-    const [media, views] = await Promise.all([graph.media(mediaId), loadViews(graph, [mediaId])]);
-    return { media, views };
+    return { media: await NETWORKS[account.network].client(env, account).post(mediaId) };
   } catch (err) {
     return { error: errMessage(err) };
   }
@@ -419,6 +414,7 @@ async function ruleEditor(
 ): Promise<Response> {
   const { rule } = opts;
   const home = homeOf(account);
+  const info = NETWORKS[account.network];
   const mediaId = rule ? rule.mediaId : (opts.mediaId ?? null);
   const isReel = mediaId !== null;
   const loaded = mediaId ? await loadMedia(env, account, mediaId) : null;
@@ -434,27 +430,27 @@ async function ruleEditor(
   const title = rule ? rule.name : isReel ? "New auto-reply" : "New DM keyword";
   const permalink = media?.permalink ?? rule?.permalink;
   const thumb = thumbOf(media);
-  const sent = rule ? ((await sentCountsByRule(env, account.id)).get(rule.id) ?? 0) : 0;
+  const sent = rule ? ((await sentCountsByRule(env, account)).get(rule.id) ?? 0) : 0;
 
   const aside = isReel
     ? html`<aside class="aside">
   <div class="phone">
     ${thumb ? html`<img src="${thumb}" alt="" referrerpolicy="no-referrer">` : ""}
     ${media
-        ? html`<div class="shade">${statsRow(media, loaded && "views" in loaded ? loaded.views?.byId.get(media.id) : undefined, !(loaded && "views" in loaded && loaded.views?.missingPermission))}</div>`
+        ? html`<div class="shade">${statsRow(media, account.network === "facebook" ? "Reactions" : "Likes")}</div>`
         : ""}
   </div>
   <div>
     <p class="small faint" style="margin:0 0 6px">Posted ${shortDate(media?.timestamp)}${permalink
-        ? html` · <a class="textlink" href="${permalink}" target="_blank" rel="noopener">Open on Instagram</a>`
+        ? html` · <a class="textlink" href="${permalink}" target="_blank" rel="noopener">Open on ${info.label}</a>`
         : ""}</p>
     ${captionBlock(caption)}
     ${loaded && "error" in loaded ? html`<p class="err">Couldn't load this post: ${loaded.error}</p>` : ""}
   </div>
 </aside>`
     : html`<aside class="aside"><div class="panel flat"><span class="rule-thumb dm" style="margin-bottom:16px">${icon.dm}</span>
-  <p style="margin:0" class="muted">A DM keyword answers direct messages only. Keywords on your Reels already work in DMs too,
-  so use this for words that have no Reel.</p></div></aside>`;
+  <p style="margin:0" class="muted">A DM keyword answers direct messages only. Keywords on your ${info.postNoun}s already work in
+  DMs too, so use this for words that have no ${info.postNoun}.</p></div></aside>`;
 
   let verdict: SafeHtml | string = "";
   if (rule && opts.tryText) {
@@ -471,7 +467,7 @@ async function ruleEditor(
 
   return page(
     title,
-    html`<a class="crumb" href="${home}">${icon.arrowLeft} @${account.username}</a>
+    html`<a class="crumb" href="${home}">${icon.arrowLeft} ${info.display(account.username)}</a>
 <div class="head"><div><h1>${title}</h1>
   <p class="lede">${isReel
       ? "Comments with a keyword get your link by DM, and a short reply under their comment."
@@ -494,7 +490,7 @@ ${aside}
       <span class="hint">Separate with commas. Capitals, accents, emoji and small typos don't matter, so <i>template</i>
         also catches <i>TEMPLATE</i> and <i>templte</i>. Words of 3 letters or fewer must match exactly.</span>${err("keywords")}</label>
     ${isReel
-      ? html`<label class="switch"><span><b>Reply to every comment</b><span class="hint">Ignore keywords on this Reel.</span></span>
+      ? html`<label class="switch"><span><b>Reply to every comment</b><span class="hint">Ignore keywords on this ${info.postNoun}.</span></span>
       <input type="checkbox" name="anyComment" ${input.anyComment ? "checked" : ""}></label>`
       : ""}
   </div>
@@ -504,7 +500,7 @@ ${aside}
       <input type="url" name="link" value="${input.link}" placeholder="https://" maxlength="${LIMITS.link}" required>${err("link")}</label>
     <label class="${cls("dm")}"><span>DM</span>
       <textarea name="dm" maxlength="${LIMITS.dm}" required>${input.dm}</textarea>
-      <span class="hint">Write <code>{link}</code> where the link goes. Each person gets this once per Reel every 30 days.</span>${err("dm")}</label>
+      <span class="hint">Write <code>{link}</code> where the link goes. Each person gets this once per ${info.postNoun} every 30 days.</span>${err("dm")}</label>
   </div>
 
   ${isReel
@@ -533,7 +529,7 @@ ${rule && rule.mediaId
       ? html`<div class="panel flat" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
   <div style="flex:1;min-width:220px"><h2 style="margin-bottom:6px">Past comments</h2>
     <p class="small muted" style="margin:0">Send the DM to people who commented a keyword before this was set up.
-    Instagram allows it for comments up to 7 days old.</p></div>
+    ${info.label} allows it for comments up to 7 days old.</p></div>
   <a class="btn btn-ink" href="${home}/rules/${rule.id}/past">Check past comments</a>
 </div>`
       : ""}
@@ -551,7 +547,7 @@ ${rule
       : ""}
 </div>
 </div>`,
-    { flash: opts.flash, status: opts.status, ...SECTION },
+    { flash: opts.flash, status: opts.status, ...section(account.network) },
   );
 }
 
@@ -567,14 +563,14 @@ async function saveNew(request: Request, env: Env, account: Account, mediaId: st
       return ruleEditor(env, account, {
         mediaId,
         input,
-        errors: { name: `Couldn't confirm this post belongs to @${account.username}: ${"error" in loaded ? loaded.error : ""}` },
+        errors: { name: `Couldn't confirm this post belongs to ${NETWORKS[account.network].display(account.username)}: ${"error" in loaded ? loaded.error : ""}` },
         status: 400,
       });
     }
     snapshot = { permalink: loaded.media.permalink, caption: loaded.media.caption?.slice(0, 500) };
   }
-  const id = await createRule(env, account.id, mediaId, result.rule, snapshot);
-  log.info("admin.rule_created", { account: account.username, rule: result.rule.name, media_id: mediaId });
+  const id = await createRule(env, account, mediaId, result.rule, snapshot);
+  log.info("admin.rule_created", { network: account.network, account: account.username, rule: result.rule.name, media_id: mediaId });
   return redirect(`${homeOf(account)}/rules/${id}?${flashQuery("created", result.merged)}`);
 }
 
@@ -582,7 +578,7 @@ async function saveExisting(request: Request, env: Env, account: Account, rule: 
   const input = readForm(await request.formData());
   const result = validateRule(input, rule.mediaId !== null);
   if (!result.ok) return ruleEditor(env, account, { rule, input, errors: result.errors, status: 400 });
-  await updateRule(env, account.id, rule.id, result.rule);
+  await updateRule(env, account, rule.id, result.rule);
   log.info("admin.rule_updated", { account: account.username, rule: result.rule.name });
   return redirect(`${homeOf(account)}/rules/${rule.id}?${flashQuery("saved", result.merged)}`);
 }

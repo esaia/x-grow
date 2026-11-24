@@ -1,28 +1,28 @@
 /**
  * "Past comments": answer comments made before an auto-reply existed (or
- * while it was paused / webhooks weren't set up).
+ * while it was paused / webhooks weren't set up). Works for every network.
  *
- *   GET  /admin/instagram/<user>/rules/<id>/past   preview: who would get the DM. Sends nothing.
- *   POST /admin/instagram/<user>/rules/<id>/past   send to the ticked comments, at most BATCH per click.
+ *   GET  /admin/<network>/<id>/rules/<rule>/past   preview: who would get the DM. Sends nothing.
+ *   POST /admin/<network>/<id>/rules/<rule>/past   send to the ticked comments, at most BATCH per click.
  *
- * Instagram's rules decide what's possible: one private reply per comment,
- * and only within 7 days of the comment. So the preview only lists comments
- * from the last 7 days, one per person, skipping people who already got this
- * Reel's DM (the same `ig_sent` claim the webhook uses, so neither path can
- * double-send).
+ * The networks decide what's possible: one private reply per comment, only
+ * within 7 days of it. So the preview lists comments from the last 7 days,
+ * one per person, skipping people who already got this post's DM (the same
+ * `sent` claim the webhook uses, so neither path can double-send).
  *
  * BATCH keeps one click under the free plan's 50 outgoing requests per
  * invocation: each person costs a DM call plus, optionally, a public reply.
  */
-import { matchComment, pickPublicReply, renderDm } from "../autoreply/rules";
 import { ago, html, icon, page, type SafeHtml } from "../admin/html";
 import type { Env } from "../env";
 import { log } from "../log";
+import { GraphError } from "../meta";
+import { NETWORKS, type NetComment } from "../networks";
 import { claimSent, recordEvent, releaseSent, sentUserIds, type Account, type StoredRule } from "./db";
-import { GraphError, createGraph, type IgComment } from "./graph";
+import { matchComment, pickPublicReply, renderDm, type Rule } from "./rules";
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-/** Instagram rejects replies right at the edge; leave a margin. */
+/** The networks reject replies right at the edge; leave a margin. */
 const SAFE_WINDOW_MS = WINDOW_MS - 10 * 60 * 1000;
 const MAX_PAGES = 10;
 const BATCH = 20;
@@ -47,12 +47,12 @@ interface Scan {
 }
 
 /**
- * Decide, for a batch of comments (newest first, replies included), who can
- * still get the DM. Pure, so it is unit-tested: this is what sends real DMs.
+ * Decide, for a batch of comments (replies included), who can still get the
+ * DM. Pure, so it is unit-tested: this is what sends real DMs.
  */
 export function classifyComments(
-  comments: IgComment[],
-  rule: Pick<StoredRule, "keywords" | "anyComment" | "id" | "mediaId" | "name" | "link" | "dm" | "publicReplies" | "enabled">,
+  comments: NetComment[],
+  rule: Rule,
   account: Pick<Account, "id" | "username">,
   alreadySent: Set<string>,
   now = Date.now(),
@@ -60,15 +60,14 @@ export function classifyComments(
   const cutoff = now - SAFE_WINDOW_MS;
   const result: Omit<Scan, "truncated"> = { eligible: [], alreadySent: 0, noMatch: 0, tooOld: 0, own: 0 };
   const seenUsers = new Set<string>();
-  const all = comments.flatMap((c) => [c, ...(c.replies?.data ?? [])]);
+  const all = comments.flatMap((c) => [c, ...(c.replies ?? [])]);
   // Oldest first, so a person's *first* matching comment is the one answered.
   all.sort((a, b) => Date.parse(a.timestamp ?? "") - Date.parse(b.timestamp ?? ""));
 
   for (const c of all) {
-    const userId = c.from?.id;
-    const username = c.from?.username ?? c.username ?? "";
-    if (!userId || !c.timestamp) continue;
-    if (userId === account.id || username.toLowerCase() === account.username.toLowerCase()) {
+    if (!c.timestamp) continue;
+    const username = c.username ?? "";
+    if (c.userId === account.id || (username && username.toLowerCase() === account.username.toLowerCase())) {
       result.own++;
       continue;
     }
@@ -76,42 +75,40 @@ export function classifyComments(
       result.tooOld++;
       continue;
     }
-    const hit = matchComment({ ...rule, id: rule.id }, c.text ?? "");
+    const hit = matchComment(rule, c.text);
     if (!hit) {
       result.noMatch++;
       continue;
     }
+    // Same fallback as the webhook: no commenter id → dedup on the comment.
+    const userId = c.userId ?? `comment:${c.id}`;
     if (alreadySent.has(userId) || seenUsers.has(userId)) {
       result.alreadySent++;
       continue;
     }
     seenUsers.add(userId);
-    result.eligible.push({ commentId: c.id, userId, username, text: c.text ?? "", at: c.timestamp, keyword: hit.keyword });
+    result.eligible.push({ commentId: c.id, userId, username: username || "someone", text: c.text, at: c.timestamp, keyword: hit.keyword });
   }
   result.eligible.reverse(); // show newest first
   return result;
 }
 
 async function scan(env: Env, account: Account, rule: StoredRule): Promise<Scan> {
-  const graph = createGraph(env, account.token);
+  const client = NETWORKS[account.network].client(env, account);
   const sent = await sentUserIds(env, rule.mediaId!);
   const cutoff = Date.now() - SAFE_WINDOW_MS;
-  const comments: IgComment[] = [];
+  const comments: NetComment[] = [];
 
   let after: string | undefined;
-  let truncated = true;
   for (let pageNo = 0; pageNo < MAX_PAGES; pageNo++) {
-    const res = await graph.comments(rule.mediaId!, after);
-    comments.push(...res.data);
-    after = res.paging?.next ? res.paging.cursors?.after : undefined;
+    const res = await client.comments(rule.mediaId!, after);
+    comments.push(...res.items);
+    after = res.after;
     // Newest first: once a whole page is past the window, older pages are too.
-    const pastWindow = res.data.every((c) => c.timestamp && Date.parse(c.timestamp) < cutoff);
-    if (!after || pastWindow) {
-      truncated = false;
-      break;
-    }
+    const pastWindow = res.items.every((c) => c.timestamp && Date.parse(c.timestamp) < cutoff);
+    if (!after || pastWindow) return { ...classifyComments(comments, rule, account, sent), truncated: false };
   }
-  return { ...classifyComments(comments, rule, account, sent), truncated };
+  return { ...classifyComments(comments, rule, account, sent), truncated: true };
 }
 
 export async function pastCommentsPage(
@@ -121,10 +118,16 @@ export async function pastCommentsPage(
   home: string,
   report?: SafeHtml,
 ): Promise<Response> {
+  const info = NETWORKS[account.network];
+  const opts = { section: account.network };
   const back = html`<a class="crumb" href="${home}/rules/${rule.id}">${icon.arrowLeft} ${rule.name}</a>`;
   if (!rule.mediaId) {
-    return page("Past comments", html`${back}<div class="head"><div><h1>Past comments</h1>
-  <p class="lede">DM keywords have no comments to look back on.</p></div></div>`, { section: "instagram", status: 400 });
+    return page(
+      "Past comments",
+      html`${back}<div class="head"><div><h1>Past comments</h1>
+  <p class="lede">DM keywords have no comments to look back on.</p></div></div>`,
+      { ...opts, status: 400 },
+    );
   }
 
   let s: Scan;
@@ -135,20 +138,20 @@ export async function pastCommentsPage(
     return page(
       "Past comments",
       html`${back}<div class="head"><div><h1>Past comments</h1></div></div>
-<div class="alert"><b>Couldn't load comments from Instagram.</b> ${msg}${
+<div class="alert"><b>Couldn't load comments from ${info.label}.</b> ${msg}${
         err instanceof GraphError && err.isPermissionError
-          ? html` The connection needs the <b>instagram_manage_comments</b> permission; reconnect the account.`
+          ? html` The connection is missing a comments permission; check the login configuration, then reconnect.`
           : ""
       }</div>`,
-      { section: "instagram", status: 502 },
+      { ...opts, status: 502 },
     );
   }
 
   const skipped = [
     s.alreadySent && `${s.alreadySent} already got it`,
     s.noMatch && `${s.noMatch} without a keyword`,
-    s.tooOld && `${s.tooOld} older than 7 days (Instagram no longer allows a reply)`,
-    s.own && `${s.own} from @${account.username} (your own comments and auto-replies)`,
+    s.tooOld && `${s.tooOld} older than 7 days (${info.label} no longer allows a reply)`,
+    s.own && `${s.own} from ${info.display(account.username)} (your own comments and auto-replies)`,
   ].filter(Boolean);
 
   const list = s.eligible.length
@@ -156,7 +159,7 @@ export async function pastCommentsPage(
   <div class="list">${s.eligible.map(
     (c, i) => html`<label class="event" style="cursor:pointer">
     <input type="checkbox" name="c" value="${c.commentId}|${c.userId}" ${i < BATCH ? "checked" : ""} style="margin-top:10px;accent-color:#fcdf50;width:18px;height:18px">
-    <div style="min-width:0"><div class="event-line"><b>@${c.username}</b> <span class="muted">matched “${c.keyword}”</span></div>
+    <div style="min-width:0"><div class="event-line"><b>${account.network === "instagram" ? `@${c.username}` : c.username}</b> <span class="muted">matched “${c.keyword}”</span></div>
       <div class="event-text">“${c.text}”</div></div>
     <time datetime="${c.at}">${ago(c.at)}</time>
     <input type="hidden" name="u_${c.commentId}" value="${c.username}">
@@ -176,20 +179,20 @@ export async function pastCommentsPage(
     : html`<div class="panel empty"><h2>Nobody to send to</h2>
   <p>${s.alreadySent
       ? "Everyone who commented a keyword in the last 7 days already got the DM."
-      : `Nobody has commented ${rule.anyComment ? "" : `“${rule.keywords.join("”, “")}” `}on this Reel in the last 7 days.`}</p></div>`;
+      : `Nobody has commented ${rule.anyComment ? "" : `“${rule.keywords.join("”, “")}” `}on this ${info.postNoun} in the last 7 days.`}</p></div>`;
 
   return page(
     "Past comments",
     html`${back}
 <div class="head"><div><h1>Past comments</h1>
-  <p class="lede">People who commented a keyword in the last 7 days but haven't had the DM yet. Instagram allows one DM
+  <p class="lede">People who commented a keyword in the last 7 days but haven't had the DM yet. ${info.label} allows one DM
   per comment, within 7 days of it.</p></div>
   <span class="chip chip-accent">${s.eligible.length} can still get it</span></div>
 ${report ?? ""}
 ${skipped.length ? html`<p class="small muted" style="margin:-16px 0 24px">Skipped: ${skipped.join(" · ")}.</p>` : ""}
 ${s.truncated ? html`<p class="small muted" style="margin:-16px 0 24px">Showing the newest ${MAX_PAGES * 50} comments.</p>` : ""}
 ${list}`,
-    { section: "instagram" },
+    opts,
   );
 }
 
@@ -204,11 +207,14 @@ export async function sendPastComments(
   const picks = form
     .getAll("c")
     .map(String)
-    .map((v) => v.split("|"))
-    .filter((p): p is [string, string] => p.length === 2 && /^\d+$/.test(p[0]) && /^\d+$/.test(p[1]))
+    .map((v) => {
+      const i = v.lastIndexOf("|");
+      return [v.slice(0, i), v.slice(i + 1)] as const;
+    })
+    .filter(([commentId, userId]) => /^[\w:.-]+$/.test(commentId) && /^[\w:.-]+$/.test(userId))
     .slice(0, BATCH);
   const withPublicReply = form.has("publicReply");
-  const graph = createGraph(env, account.token);
+  const client = NETWORKS[account.network].client(env, account);
   const dm = renderDm(rule);
 
   let sent = 0;
@@ -218,9 +224,17 @@ export async function sendPastComments(
     const username = String(form.get(`u_${commentId}`) ?? "");
     const text = String(form.get(`t_${commentId}`) ?? "");
     if (!(await claimSent(env, rule.mediaId!, userId, commentId))) continue; // got it meanwhile
-    const base = { accountId: account.id, ruleId: rule.id, mediaId: rule.mediaId!, username, text, keyword: "past comment" };
+    const base = {
+      network: account.network,
+      accountId: account.id,
+      ruleId: rule.id,
+      mediaId: rule.mediaId!,
+      username,
+      text,
+      keyword: "past comment",
+    };
     try {
-      await graph.privateReply(account.id, commentId, dm);
+      await client.privateReply(commentId, dm);
       sent++;
       await recordEvent(env, { ...base, kind: "comment_dm", ok: true });
     } catch (err) {
@@ -232,20 +246,20 @@ export async function sendPastComments(
         stopped = msg;
         break;
       }
-      failures.push(`@${username}: ${msg}`);
+      failures.push(`${username}: ${msg}`);
       continue;
     }
     const reply = withPublicReply ? pickPublicReply(rule) : null;
     if (reply) {
       try {
-        await graph.replyToComment(commentId, reply);
+        await client.replyToComment(commentId, reply);
         await recordEvent(env, { ...base, kind: "public_reply", ok: true, text: reply, username: undefined });
       } catch (err) {
         await recordEvent(env, { ...base, kind: "public_reply", ok: false, text: reply, error: String(err) });
       }
     }
   }
-  log.info("instagram.past_comments.sent", { account: account.username, rule: rule.name, sent, failed: failures.length });
+  log.info(`${account.network}.past_comments.sent`, { account: account.username, rule: rule.name, sent, failed: failures.length });
 
   const report = html`<p class="flash" role="status"><span class="dot ${failures.length || stopped ? "dot-bad" : "dot-on"}"></span>
   Sent ${sent} DM${sent === 1 ? "" : "s"}.${failures.length ? ` ${failures.length} failed.` : ""}${stopped ? " Stopped: nothing else was sent." : ""}</p>

@@ -1,10 +1,15 @@
 /**
  * Verifies Meta's `X-Hub-Signature-256: sha256=<hex>` header: an HMAC-SHA256
- * of the *raw* request bytes. Parse JSON only after this passes — re-serialising
- * a parsed body changes the bytes and the HMAC with them.
+ * of the request body, checked on the raw bytes before any JSON.parse.
  *
- * Uses `crypto.subtle.verify`, which compares in constant time, instead of
- * computing a hex digest and comparing strings.
+ * One Meta quirk: per its webhook docs, "we generate the signature using an
+ * escaped unicode version of the payload, with lowercase hex digits". So a
+ * comment containing "🎄" or Georgian text can arrive as raw UTF-8 but be
+ * signed as `🎄`. If the raw bytes don't verify, we retry on that
+ * escaped form (and with "/" escaped too, as PHP-style encoders do). Every
+ * variant is still an HMAC with the app secret, so nothing gets weaker.
+ *
+ * `crypto.subtle.verify` compares in constant time.
  */
 export async function verifySignature(
   body: ArrayBuffer,
@@ -13,6 +18,13 @@ export async function verifySignature(
 ): Promise<string | null> {
   const signature = parseHeader(header);
   if (!signature) return null;
+
+  const variants: ArrayBuffer[] = [body];
+  const text = new TextDecoder().decode(body);
+  if (/[^\x00-\x7f]/.test(text)) {
+    const escaped = escapeUnicode(text);
+    variants.push(encode(escaped), encode(escaped.replaceAll("/", "\\/")));
+  }
 
   for (const { name, value } of secrets) {
     if (!value) continue;
@@ -23,9 +35,20 @@ export async function verifySignature(
       false,
       ["verify"],
     );
-    if (await crypto.subtle.verify("HMAC", key, signature, body)) return name;
+    for (const v of variants) {
+      if (await crypto.subtle.verify("HMAC", key, signature, v)) return name;
+    }
   }
   return null;
+}
+
+/** Every non-ASCII UTF-16 code unit as `\uXXXX`, lowercase hex (emoji become surrogate pairs). */
+export function escapeUnicode(s: string): string {
+  return s.replace(/[^\x00-\x7f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
+function encode(s: string): ArrayBuffer {
+  return new TextEncoder().encode(s).buffer as ArrayBuffer;
 }
 
 function parseHeader(header: string | null): Uint8Array<ArrayBuffer> | null {

@@ -25,6 +25,8 @@ directory = "./public"
 META_APP_ID = "1164880839593896"
 # Use cases > Instagram > API setup with Unified login > configuration ID
 IG_LOGIN_CONFIG_ID = "1803370191792798"
+# Facebook Login for Business configuration with Page assets (see README)
+FB_LOGIN_CONFIG_ID = "1687868956063020"
 
 # Daily housekeeping: forget dedup rows past their window, trim old activity.
 # (Unified Login tokens never expire, so there is no token refresh.)

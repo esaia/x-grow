@@ -106,7 +106,7 @@ describe("keyword de-duplication", () => {
   });
 });
 
-import { GraphError } from "../src/instagram/graph";
+import { GraphError } from "../src/meta";
 
 describe("GraphError advice", () => {
   it("turns 'messaging disabled' into the setting to change", () => {

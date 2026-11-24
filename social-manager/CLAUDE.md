@@ -1,8 +1,8 @@
 # CLAUDE.md: social-manager
 
 Social media management on Cloudflare Workers (free tier). Today it does one
-thing: Instagram comment-to-DM auto-replies, for any number of connected
-Instagram accounts, managed from an admin panel at `/admin`. Scheduled posts
+thing: comment-to-DM auto-replies for any number of connected Instagram
+accounts and Facebook Pages, managed from an admin panel at `/admin`. Scheduled posts
 and cross-posting are planned. It is independent of `../extension`: its own
 package.json, its own Node version (22; current wrangler refuses Node 20), no
 shared code. Setup, behaviour and log events are in `README.md`.
@@ -24,17 +24,16 @@ npm run compile               # tsc --noEmit
 npm run deploy                # applies pending D1 migrations, then deploys
 ```
 
-## Layout rule: one folder per network
+## Layout: one engine, one adapter per network
 
-`src/instagram/` holds everything Instagram-specific, including its admin
-pages (`panel.ts`) and its D1 queries (`db.ts`). `src/autoreply/` (rule
-validation and keyword matching) and `src/admin/` (login, HTML templating)
-know nothing about any network. A new network gets:
-- `src/<network>/`
-- its own `/connect`, `/webhooks`, `/admin` and `/admin/api` branches in `index.ts`
-- prefixed secrets
-- `<network>_`-prefixed tables in a new migration
-- `<network>.`-prefixed log events
+`src/autoreply/` is the engine and the admin panel: matching, dedup,
+handling, past comments, pages and D1 queries. It is written against the
+`Client` contract in `src/networks.ts`. Each network (`src/instagram/`,
+`src/facebook/`) is only a `client.ts` (Graph calls, normalised to
+Post/NetComment) and a `webhook.ts` (payload → `handleComment` /
+`handleDm`). A new network is one entry in `NETWORKS` plus those two files,
+never another panel. Tables are shared, with a `network` column (migration
+0002). Log events are `<network>.…`.
 
 ## Instagram: Unified Login, not Instagram Login
 
@@ -51,11 +50,11 @@ Don't "fix" any of this back to graph.instagram.com.
 
 ## Things that must not be "cleaned up"
 
-- **Signature is checked on the raw bytes before JSON.parse.** Re-serialising changes the bytes.
+- **Signature is checked before JSON.parse, on the raw bytes, then on Meta's escaped-unicode form** (Meta signs `\uXXXX`-escaped payloads). Re-serialising a parsed body changes the bytes.
 - **200 first, work in `ctx.waitUntil`.** A slow response makes Meta redeliver, and redelivery is a second DM attempt.
 - **Dedup is an atomic claim (`claimSent`, an upsert on the primary key) made *before* sending**, released only when the send fails. Don't turn it into read-then-write.
 - **The public "Sent!" reply only happens after the private reply succeeded.**
-- **Every rule query is scoped by `account_id`.** A DM to one account must never be answered with another account's link. `anyComment` never applies to DMs.
+- **Every rule query is scoped by `network` + `account_id`.** A DM to one account must never be answered with another account's link. `anyComment` never applies to DMs.
 - **`/connect/instagram` has no admin gate on purpose.** Meta's Standard Access already limits login to people with a role on the app. The `state` cookie check is the CSRF guard; keep it.
 - **Admin panel security:**
   - Its only script is `public/admin.js` (busy states on submit), allowed by `script-src 'self'`. No inline scripts or handlers, and every form must keep working without the script.
@@ -68,6 +67,14 @@ Don't "fix" any of this back to graph.instagram.com.
 The panel uses llamapresenter.com's dark site theme, taken from its CSS: `site-*` colour tokens, Geist (self-hosted in `public/fonts`, OFL), the floating blurred pill nav, 28px glow panels, and yellow `#fcdf50` pill buttons with `#191818` text. Tokens and components live in `src/admin/html.ts`. Restyle there; don't introduce a second palette. Reels render as phone frames (the page's focal point), and the rule editor shows a preview of the comment reply and DM.
 
 Views come from `/{media-id}/insights?metric=views`, which needs `instagram_manage_insights` in the login configuration. Without it the panel shows "–" and a hint, while likes and comment counts (media fields) always work.
+
+## Facebook Pages
+
+- **Login:** a separate Facebook Login for Business configuration (Page assets, `FB_LOGIN_CONFIG_ID`). `/me/accounts` turns the system-user token into Page tokens, with `/me/assigned_pages` as a fallback.
+- **Webhooks:** object `page`. `feed` carries comments (`item=comment`, `verb=add`) and `messages` carries Messenger.
+- **Replies:** the private reply is `POST /{page-id}/messages {recipient:{comment_id}}`; the public reply is `POST /{comment-id}/comments`.
+- **Commenter id:** some comments arrive without `from`; dedup then keys on `comment:<id>`.
+- **Unverified live:** whether Page permissions work under Standard Access for the app owner once the app is Live. Meta's docs are ambiguous.
 
 ## Meta API facts, verified 2026-11-24 (Graph API v27.0)
 

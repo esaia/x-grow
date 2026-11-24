@@ -81,9 +81,11 @@ export function page(
 ${nav
     ? html`<header class="top"><nav class="pill-nav" aria-label="Main">
   <a class="brand" href="/admin">${MARK}<span>Social Manager</span></a>
-  <a class="nav-link${opts.section === "instagram" ? " is-current" : ""}" href="/admin/instagram"${
-    opts.section === "instagram" ? raw(' aria-current="page"') : ""
-  }>Instagram</a>
+  ${(["instagram", "facebook"] as const).map(
+    (n) => html`<a class="nav-link${opts.section === n ? " is-current" : ""}" href="/admin/${n}"${
+      opts.section === n ? raw(' aria-current="page"') : ""
+    }>${n === "instagram" ? "Instagram" : "Facebook"}</a>`,
+  )}
   <span class="grow"></span>
   <form method="post" action="/admin/logout"><button class="nav-link">Log out</button></form>
 </nav></header>`

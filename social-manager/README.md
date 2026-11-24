@@ -3,8 +3,8 @@
 Social media management on Cloudflare Workers' free tier. No framework, no
 runtime dependencies. One Worker, one folder per network under `src/`.
 
-**Today:** Instagram comment-to-DM auto-replies (like ManyChat), for any
-number of Instagram accounts, managed from an admin panel at `/admin`.
+**Today:** comment-to-DM auto-replies (like ManyChat) for any number of
+**Instagram accounts and Facebook Pages**, managed from an admin panel at `/admin`.
 **Planned:** scheduled posts and cross-posting to several networks at once.
 
 ## Instagram auto-replies
@@ -39,23 +39,25 @@ tokens. Those tokens **never expire**, so there is no refresh job.
 
 ```
 src/
-  index.ts             routes (/admin, /connect, /webhooks per network) + daily cron
-  env.ts               bindings, vars and secrets
-  crypto.ts, http.ts, log.ts   shared helpers
-  admin/               panel shell: login/session (auth.ts), escaping templates + CSS (html.ts)
-  autoreply/           network-agnostic: rule types + validation (rules.ts), matching (match.ts)
-  instagram/
-    panel.ts           admin pages: accounts, Reels grid, rule editor, activity
-    admin.ts           JSON API for curl (/admin/api/instagram/*)
-    connect.ts         "connect an account" login flow
-    webhook.ts         verification, signature check, comment + DM handlers
+  index.ts             routes: /admin, /connect/<network>, /webhooks/<network> + daily cron
+  networks.ts          the Client contract + NETWORKS registry (instagram, facebook)
+  meta.ts              Graph API calls, errors, code exchange (shared by both Meta networks)
+  webhooks.ts          verify handshake, signature check, 200-first (shared)
+  signature.ts         X-Hub-Signature-256, incl. Meta's escaped-unicode quirk
+  connect.ts           "connect an account" login flow (shared)
+  admin/               panel shell: login/session, templates + CSS
+  autoreply/           the engine, network-agnostic:
     db.ts              every D1 query (accounts, rules, dedup, activity)
-    graph.ts           Graph API client (version pinned in config.ts)
-    signature.ts, config.ts
-migrations/            D1 schema
-test/                  vitest: matching, rules, signature, escaping, sessions
-scripts/send-test-webhook.mjs   seeds local D1, posts signed fake webhooks
+    handle.ts          comment / DM handling (match → dedup → DM → public reply → log)
+    panel.ts           admin pages, backfill.ts past comments, api.ts JSON
+    rules.ts, match.ts rule validation, typo-tolerant matching
+  instagram/           client.ts (Graph calls) + webhook.ts (payload → engine)
+  facebook/            client.ts (Page + Messenger calls) + webhook.ts
+migrations/            D1 schema (0002 generalised the Instagram tables)
 ```
+
+Adding a network: a `client.ts` implementing `Client`, a `webhook.ts`
+that normalises its payload, and one entry in `NETWORKS`.
 
 A new network (say Threads) gets its own `src/<network>/`, its own
 `/connect`, `/webhooks` and `/admin` branches in `index.ts`, and
@@ -130,6 +132,29 @@ Reconnecting an account replaces its token and keeps its auto-replies.
 **Who can connect?** With Standard Access (the default), only people with a
 role on the Meta app can finish this login. Meta enforces that, not the
 Worker. See [Opening it up to other people](#opening-it-up-to-other-people).
+
+
+### Facebook Pages
+
+Same engine, same panel (**Facebook** in the top nav). Comments arrive on the
+Page's `feed` webhook; the DM goes out through **Messenger**. Rules match
+Instagram's: one private reply per comment, within 7 days.
+
+1. **Login configuration** (separate from Instagram's): App dashboard →
+   **Facebook Login for Business → Configurations → Create configuration**.
+   - Token: **System-user access token**, expiration **Never**.
+   - Assets: **Pages**.
+   - Permissions: `pages_show_list`, `pages_read_engagement`, `pages_read_user_content`, `pages_manage_engagement`, `pages_manage_metadata`, `pages_messaging`.
+2. Add `https://<worker>/connect/facebook/callback` as a redirect URL (FLfB → Settings → Valid OAuth Redirect URIs).
+3. Put the configuration ID in `wrangler.toml` as `FB_LOGIN_CONFIG_ID` and run `npm run deploy`.
+4. **Webhooks** (App dashboard → Webhooks → object **Page**):
+   - Callback URL: `https://<worker>/webhooks/facebook`, with the same verify token.
+   - Subscribe to **feed** and **messages**.
+5. In the panel: **Facebook → Connect Page**. The connect step subscribes each Page to the webhook.
+
+Meta says Page permissions need App Review once an app is Live, except for
+people with a role on the app. That covers your own Pages; other people's
+Pages need App Review.
 
 ### 6. Test it for real
 

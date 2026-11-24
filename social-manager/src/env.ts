@@ -28,6 +28,14 @@ export interface Env {
    */
   META_APP_SECRET: string;
 
+  // ── Facebook Pages ────────────────────────────────────────────────────────
+
+  /**
+   * Configuration ID of the Facebook Login for Business configuration with
+   * Page assets (a separate configuration from Instagram's). Public; a [var].
+   */
+  FB_LOGIN_CONFIG_ID?: string;
+
   // ── Instagram ─────────────────────────────────────────────────────────────
 
   /**
@@ -36,7 +44,10 @@ export interface Env {
    * Public; a [var].
    */
   IG_LOGIN_CONFIG_ID: string;
-  /** Any random string; you type the same value into the Meta webhook form. */
+  /**
+   * Any random string; you type the same value into the Meta webhook form.
+   * One value serves every network's webhook (Instagram and Facebook Pages).
+   */
   IG_VERIFY_TOKEN: string;
   /**
    * Optional second secret tried when META_APP_SECRET doesn't verify a
