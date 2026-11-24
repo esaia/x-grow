@@ -13,6 +13,10 @@ browser and calls OpenAI with **your own API key**.
 
 The AI is **assist-only**: it drafts, *you* click Post.
 
+> This repo also holds [`social-manager/`](social-manager/README.md), a separate
+> social media management tool on Cloudflare Workers. It currently does
+> Instagram comment-to-DM auto-replies.
+
 ---
 
 ## Architecture

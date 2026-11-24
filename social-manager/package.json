@@ -1,0 +1,28 @@
+{
+  "name": "social-manager",
+  "description": "Social media management on Cloudflare Workers: Instagram comment-to-DM auto-replies (more networks and scheduling planned)",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler d1 migrations apply social-manager --remote && wrangler deploy",
+    "tail": "wrangler tail --format pretty",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "compile": "tsc --noEmit",
+    "webhook": "node scripts/send-test-webhook.mjs",
+    "db:migrate": "wrangler d1 migrations apply social-manager --remote",
+    "db:migrate:local": "wrangler d1 migrations apply social-manager --local"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261124.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1",
+    "wrangler": "^4.167.0"
+  }
+}

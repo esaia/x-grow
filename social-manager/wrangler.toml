@@ -1,0 +1,36 @@
+name = "social-manager"
+main = "src/index.ts"
+compatibility_date = "2026-11-01"
+
+# Workers Logs: keeps console output searchable in the dashboard after
+# `wrangler tail` is closed. Included in the free plan.
+[observability]
+enabled = true
+
+# Accounts, auto-reply rules, dedup and the activity log.
+# Schema: migrations/. Apply with `npm run db:migrate` (remote) or
+# `npm run db:migrate:local`.
+[[d1_databases]]
+binding = "DB"
+database_name = "social-manager"
+database_id = "d51ff18f-c657-4cfe-8ea2-7605a69e1f78"
+migrations_dir = "migrations"
+
+# Static files (the Geist font), served by Cloudflare before the Worker runs.
+[assets]
+directory = "./public"
+
+# Public identifiers, not secrets.
+[vars]
+META_APP_ID = "1164880839593896"
+# Use cases > Instagram > API setup with Unified login > configuration ID
+IG_LOGIN_CONFIG_ID = "1803370191792798"
+
+# Daily housekeeping: forget dedup rows past their window, trim old activity.
+# (Unified Login tokens never expire, so there is no token refresh.)
+[triggers]
+crons = ["17 4 * * *"]
+
+# Secrets (set with `npx wrangler secret put <NAME>`, never here):
+#   META_APP_SECRET, IG_VERIFY_TOKEN, ADMIN_KEY (also the admin panel password)
+#   optional: IG_APP_SECRET_ALT

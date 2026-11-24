@@ -1,0 +1,7 @@
+# Copy to .dev.vars for `npm run dev`. .dev.vars is git-ignored.
+# META_APP_ID and IG_LOGIN_CONFIG_ID come from wrangler.toml [vars].
+META_APP_SECRET=local-test-secret
+IG_VERIFY_TOKEN=local-verify-token
+ADMIN_KEY=local-admin-key
+# Log Graph API writes instead of sending them. Never set this in production.
+DRY_RUN=true

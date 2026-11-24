@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repo layout
+
+Two independent projects, no root workspace, no shared code:
+
+- `extension/`: X-Grow, the Chrome extension. Everything below this section is about it.
+- `social-manager/`: social media management on Cloudflare Workers. Today: Instagram comment-to-DM auto-replies. Planned: scheduled posts and cross-posting. It has its own `CLAUDE.md`, `README.md`, `package.json` and Node version (22, via `.nvmrc`); read those when working there.
+
 ## What this is
 
 X-Grow is an AI copilot for growing an X (Twitter) account, shipped as **one Chrome extension** (`extension/`, WXT + React + TypeScript, Manifest V3). There is no server, no database and no user account — it used to have a Laravel + Inertia + MySQL platform alongside it, and that has been deleted; if you find a reference to `platform/`, `/api`, a Sanctum token, or the dashboard↔extension `postMessage` bridge, it is stale.
