@@ -4,7 +4,7 @@
  */
 import type { Env } from "../env";
 import type { Network } from "../networks";
-import type { Rule, RuleFields } from "./rules";
+import type { Gate, Rule, RuleFields } from "./rules";
 
 const DAY = 24 * 60 * 60 * 1000;
 /** One DM + one public reply per person per Reel/post within this window. */
@@ -91,6 +91,8 @@ interface RuleRow {
   created_at: string;
   updated_at: string;
   updated_by: string | null;
+  /** JSON Gate, or NULL (migration 0004). */
+  gate: string | null;
 }
 
 export interface StoredRule extends Rule {
@@ -113,6 +115,7 @@ function toRule(r: RuleRow): StoredRule {
     publicReplies: JSON.parse(r.public_replies),
     anyComment: r.any_comment === 1,
     enabled: r.enabled === 1,
+    gate: r.gate ? (JSON.parse(r.gate) as Gate) : null,
     permalink: r.permalink,
     caption: r.caption,
     createdAt: r.created_at,
@@ -160,8 +163,8 @@ export async function createRule(
   const t = now();
   const row = await env.DB.prepare(
     `INSERT INTO rules (network, account_id, media_id, name, keywords, link, dm, public_replies,
-       any_comment, enabled, permalink, caption, created_at, updated_at, updated_by)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14) RETURNING id`,
+       any_comment, enabled, permalink, caption, created_at, updated_at, updated_by, gate)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14, ?15) RETURNING id`,
   )
     .bind(
       a.network,
@@ -178,6 +181,7 @@ export async function createRule(
       snapshot.caption ?? null,
       t,
       by,
+      rule.gate ? JSON.stringify(rule.gate) : null,
     )
     .first<{ id: number }>();
   return row!.id;
@@ -192,7 +196,7 @@ export async function updateRule(
 ) {
   await env.DB.prepare(
     `UPDATE rules SET name = ?1, keywords = ?2, link = ?3, dm = ?4, public_replies = ?5,
-       any_comment = ?6, enabled = ?7, updated_at = ?8, updated_by = ?12
+       any_comment = ?6, enabled = ?7, updated_at = ?8, updated_by = ?12, gate = ?13
      WHERE id = ?9 AND network = ?10 AND account_id = ?11`,
   )
     .bind(
@@ -208,6 +212,7 @@ export async function updateRule(
       a.network,
       a.id,
       by,
+      rule.gate ? JSON.stringify(rule.gate) : null,
     )
     .run();
 }
@@ -266,7 +271,12 @@ export async function releaseDm(env: Env, mid: string) {
 export interface EventInput {
   network: Network;
   accountId: string;
-  kind: "comment_dm" | "public_reply" | "dm";
+  /**
+   * comment_dm: the comment's DM (the link, or the button) · public_reply ·
+   * dm: answer to a keyword DM · link_dm: the link, after a button tap ·
+   * follow_ask: tapped, but doesn't follow yet, so asked to.
+   */
+  kind: "comment_dm" | "public_reply" | "dm" | "link_dm" | "follow_ask";
   ok: boolean;
   ruleId?: number;
   mediaId?: string;

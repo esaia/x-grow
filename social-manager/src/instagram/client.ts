@@ -6,11 +6,14 @@
  */
 import type { Account } from "../autoreply/db";
 import type { Env } from "../env";
-import { GraphError, graph } from "../meta";
+import { GraphError, graph, messageBody } from "../meta";
 import type { Client, Connected, NetComment, Post } from "../networks";
 
-/** Webhook fields each connected account is subscribed to. */
-const WEBHOOK_FIELDS = "comments,messages";
+/**
+ * Webhook fields each connected account is subscribed to. `messaging_postbacks`
+ * delivers button taps; it must also be ticked in the app's webhook settings.
+ */
+const WEBHOOK_FIELDS = "comments,messages,messaging_postbacks";
 
 const MEDIA_FIELDS =
   "id,caption,permalink,media_type,media_product_type,timestamp,thumbnail_url,media_url,like_count,comments_count";
@@ -123,11 +126,24 @@ export function instagramClient(env: Env, account: Pick<Account, "id" | "token">
       return { items: page.data.map(toComment), after: next(page) };
     },
 
-    privateReply: (commentId, text) =>
-      send(`/${account.id}/messages`, { recipient: { comment_id: commentId }, message: { text } }, fake),
+    privateReply: (commentId, message) =>
+      send(`/${account.id}/messages`, { recipient: { comment_id: commentId }, message: messageBody(message) }, fake),
 
-    sendDm: (recipientId, text) =>
-      send(`/${account.id}/messages`, { recipient: { id: recipientId }, message: { text } }, fake),
+    sendDm: (recipientId, message) =>
+      send(`/${account.id}/messages`, { recipient: { id: recipientId }, message: messageBody(message) }, fake),
+
+    /**
+     * User Profile API. Meta only answers once the person has messaged the
+     * account or tapped a button (that is their consent), which is why the
+     * follow check happens on the tap, never on the comment.
+     */
+    async follower(userId) {
+      const p = await call<{ username?: string; is_user_follow_business?: boolean }>("GET", `/${userId}`, {
+        fields: "username,is_user_follow_business",
+      });
+      if (typeof p.is_user_follow_business !== "boolean") throw new Error("Instagram didn't say whether they follow.");
+      return { follows: p.is_user_follow_business, username: p.username };
+    },
 
     replyToComment: (commentId, message) => send(`/${commentId}/replies`, { message }, { id: "dry-run" }),
 

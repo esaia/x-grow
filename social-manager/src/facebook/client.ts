@@ -10,7 +10,7 @@
 import type { Account } from "../autoreply/db";
 import type { Env } from "../env";
 import { log } from "../log";
-import { GraphError, graph } from "../meta";
+import { GraphError, graph, messageBody } from "../meta";
 import type { Client, Connected, NetComment, Post } from "../networks";
 
 /** Page webhook fields: comments are in `feed`, Messenger DMs in `messages`. */
@@ -133,13 +133,13 @@ export function facebookClient(env: Env, page: Pick<Account, "id" | "token">): C
       return { items: res.data.map(toComment), after: next(res) };
     },
 
-    privateReply: (commentId, text) =>
-      send(`/${page.id}/messages`, { recipient: { comment_id: commentId }, message: { text } }, { message_id: "dry-run" }),
+    privateReply: (commentId, message) =>
+      send(`/${page.id}/messages`, { recipient: { comment_id: commentId }, message: messageBody(message) }, { message_id: "dry-run" }),
 
-    sendDm: (recipientId, text) =>
+    sendDm: (recipientId, message) =>
       send(
         `/${page.id}/messages`,
-        { recipient: { id: recipientId }, messaging_type: "RESPONSE", message: { text } },
+        { recipient: { id: recipientId }, messaging_type: "RESPONSE", message: messageBody(message) },
         { message_id: "dry-run" },
       ),
 

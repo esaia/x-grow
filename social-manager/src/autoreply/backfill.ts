@@ -19,7 +19,8 @@ import { log } from "../log";
 import { GraphError } from "../meta";
 import { NETWORKS, type NetComment } from "../networks";
 import { claimSent, recordEvent, releaseSent, sentUserIds, type Account, type StoredRule } from "./db";
-import { matchComment, pickPublicReply, renderDm, type Rule } from "./rules";
+import { sendFirstDm } from "./handle";
+import { matchComment, pickPublicReply, type Rule } from "./rules";
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 /** The networks reject replies right at the edge; leave a margin. */
@@ -216,7 +217,6 @@ export async function sendPastComments(
     .slice(0, BATCH);
   const withPublicReply = form.has("publicReply");
   const client = NETWORKS[account.network].client(env, account);
-  const dm = renderDm(rule);
 
   let sent = 0;
   let stopped: string | null = null;
@@ -236,7 +236,8 @@ export async function sendPastComments(
       actor,
     };
     try {
-      await client.privateReply(commentId, dm);
+      // The same first DM as a live comment: the link, or the button first.
+      await sendFirstDm(client, rule, commentId, { account: account.username, comment_id: commentId });
       sent++;
       await recordEvent(env, { ...base, kind: "comment_dm", ok: true });
     } catch (err) {

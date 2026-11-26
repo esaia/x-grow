@@ -11,6 +11,7 @@ import {
   claimDm,
   claimSent,
   getAccount,
+  getRule,
   listRules,
   recordEvent,
   releaseDm,
@@ -18,7 +19,16 @@ import {
   ruleForMedia,
   type Account,
 } from "./db";
-import { matchComment, matchDm, pickPublicReply, renderDm } from "./rules";
+import {
+  firstMessage,
+  followMessage,
+  matchComment,
+  matchDm,
+  parsePostback,
+  pickPublicReply,
+  renderDm,
+  type Rule,
+} from "./rules";
 
 export interface IncomingComment {
   commentId: string;
@@ -38,6 +48,15 @@ export interface IncomingDm {
   own: boolean;
   /** Deleted / unsupported message types. */
   skip: boolean;
+}
+
+/** Someone tapped a button in one of our DMs. */
+export interface IncomingPostback {
+  mid: string;
+  senderId: string;
+  payload?: string;
+  /** The button's label, as they saw it. */
+  title?: string;
 }
 
 /** Look up the account an event is for; null (and a log line) if it isn't connected. */
@@ -69,6 +88,68 @@ function errorFields(err: unknown) {
 /** For the panel's activity list: the cause and the fix, in plain words. */
 export function errorText(err: unknown): string {
   return err instanceof GraphError ? err.advice : String(err);
+}
+
+/**
+ * The comment's DM: the link, or the opener with its button. Meta's docs only
+ * show text for private replies, so if a button is refused the link goes as
+ * plain text instead and nobody misses out (logged, to notice). Account-wide
+ * errors (hourly limit, expired connection, DMs switched off) are not retried:
+ * text would fail the same way.
+ */
+export async function sendFirstDm(
+  api: Client,
+  rule: Rule,
+  commentId: string,
+  ctx: Record<string, unknown> = {},
+): Promise<{ button: boolean }> {
+  const first = firstMessage(rule);
+  if (typeof first === "string") {
+    await api.privateReply(commentId, first);
+    return { button: false };
+  }
+  try {
+    await api.privateReply(commentId, first);
+    return { button: true };
+  } catch (err) {
+    if (!(err instanceof GraphError) || err.isRateLimit || err.isAuthError || err.isMessagingDisabled) throw err;
+    log.warn("comment.button_refused_sent_link", { ...ctx, rule: rule.name, error: err.toLog() });
+    await api.privateReply(commentId, renderDm(rule));
+    return { button: false };
+  }
+}
+
+/**
+ * After a tap, or a keyword DM: the link, unless the rule only gives it to
+ * followers and this person doesn't follow, who then get the follow message
+ * and its button. If Meta can't say whether they follow, they get the link: a
+ * broken check must never trap people in a "follow me" loop. `note` says so,
+ * for the activity list. Throws when the send itself fails.
+ */
+export async function linkOrFollow(
+  api: Client,
+  rule: Rule,
+  senderId: string,
+  ctx: Record<string, unknown>,
+): Promise<{ kind: "link" | "follow_ask"; username?: string; note?: string }> {
+  const ask = followMessage(rule);
+  let username: string | undefined;
+  let note: string | undefined;
+  if (ask && api.follower) {
+    try {
+      const who = await api.follower(senderId);
+      username = who.username;
+      if (!who.follows) {
+        await api.sendDm(senderId, ask);
+        return { kind: "follow_ask", username };
+      }
+    } catch (err) {
+      note = `Couldn't check whether they follow, so they got the link. ${errorText(err)}`;
+      log.warn("follow_check_failed", { ...ctx, rule: rule.name, ...errorFields(err) });
+    }
+  }
+  await api.sendDm(senderId, renderDm(rule));
+  return { kind: "link", username, note };
 }
 
 export async function handleComment(env: Env, account: Account, c: IncomingComment, client?: Client) {
@@ -129,8 +210,8 @@ export async function handleComment(env: Env, account: Account, c: IncomingComme
   const matchInfo = { rule: rule.name, keyword: hit.keyword, matched: hit.matched, distance: hit.distance };
 
   try {
-    await api.privateReply(c.commentId, renderDm(rule));
-    log.info(`${ev}.dm_sent`, { ...ctx, ...matchInfo });
+    const { button } = await sendFirstDm(api, rule, c.commentId, ctx);
+    log.info(`${ev}.dm_sent`, { ...ctx, ...matchInfo, button });
     await recordEvent(env, { ...base, kind: "comment_dm", ok: true });
   } catch (err) {
     // Release the claim so the person can comment again later and get it.
@@ -193,9 +274,16 @@ export async function handleDm(env: Env, account: Account, m: IncomingDm) {
   };
   const matchInfo = { rule: rule.name, keyword: hit.keyword, matched: hit.matched, distance: hit.distance };
   try {
-    await NETWORKS[account.network].client(env, account).sendDm(m.senderId, renderDm(rule));
-    log.info(`${ev}.sent`, { ...ctx, ...matchInfo });
-    await recordEvent(env, { ...base, ok: true });
+    // They wrote to us, so there's no need for a button first; "followers only" still applies.
+    const r = await linkOrFollow(NETWORKS[account.network].client(env, account), rule, m.senderId, ctx);
+    log.info(r.kind === "link" ? `${ev}.sent` : `${ev}.follow_asked`, { ...ctx, ...matchInfo });
+    await recordEvent(env, {
+      ...base,
+      kind: r.kind === "link" ? "dm" : "follow_ask",
+      ok: true,
+      username: r.username,
+      error: r.note,
+    });
   } catch (err) {
     await releaseDm(env, m.mid);
     const rate = err instanceof GraphError && err.isRateLimit;
@@ -205,5 +293,58 @@ export async function handleDm(env: Env, account: Account, m: IncomingDm) {
       ...errorFields(err),
     });
     await recordEvent(env, { ...base, ok: false, error: errorText(err) });
+  }
+}
+
+/**
+ * A tap on one of our buttons: "Send me the link" (step `open`) or "Following"
+ * (step `follow`). Both do the same thing, link or follow message, so tapping
+ * "Following" without following just asks again. A paused or deleted rule
+ * answers nothing.
+ */
+export async function handlePostback(env: Env, account: Account, p: IncomingPostback) {
+  const ev = `${account.network}.button`;
+  const ctx = { account: account.username, sender_id: p.senderId, mid: p.mid, payload: p.payload, title: p.title };
+
+  if (p.senderId === account.id) {
+    log.info(`${ev}.skip_own`, ctx);
+    return;
+  }
+  const tap = parsePostback(p.payload);
+  if (!tap) {
+    log.info(`${ev}.not_ours`, ctx);
+    return;
+  }
+  const rule = await getRule(env, account, tap.ruleId);
+  if (!rule || !rule.enabled) {
+    log.info(rule ? `${ev}.rule_disabled` : `${ev}.rule_gone`, { ...ctx, rule: rule?.name });
+    return;
+  }
+  if (!(await claimDm(env, p.mid))) {
+    log.info(`${ev}.duplicate_delivery`, ctx);
+    return;
+  }
+
+  const base = {
+    network: account.network,
+    accountId: account.id,
+    ruleId: rule.id,
+    mediaId: rule.mediaId ?? undefined,
+    text: p.title,
+  };
+  try {
+    const r = await linkOrFollow(NETWORKS[account.network].client(env, account), rule, p.senderId, ctx);
+    log.info(r.kind === "link" ? `${ev}.link_sent` : `${ev}.follow_asked`, { ...ctx, rule: rule.name, step: tap.step });
+    await recordEvent(env, {
+      ...base,
+      kind: r.kind === "link" ? "link_dm" : "follow_ask",
+      ok: true,
+      username: r.username,
+      error: r.note,
+    });
+  } catch (err) {
+    await releaseDm(env, p.mid);
+    log.error(`${ev}.failed`, { ...ctx, rule: rule.name, ...errorFields(err) });
+    await recordEvent(env, { ...base, kind: "link_dm", ok: false, error: errorText(err) });
   }
 }

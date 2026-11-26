@@ -36,6 +36,9 @@ export interface NetComment {
   replies?: NetComment[];
 }
 
+/** A DM: plain text, or text with buttons that send a postback when tapped. */
+export type OutMessage = string | { text: string; buttons: { title: string; payload: string }[] };
+
 export interface Page<T> {
   items: T[];
   /** Cursor for the next (older) page, if any. */
@@ -49,9 +52,14 @@ export interface Client {
   post(id: string): Promise<Post>;
   comments(postId: string, after?: string): Promise<Page<NetComment>>;
   /** DM to the author of a comment. One per comment, within 7 days of it. */
-  privateReply(commentId: string, text: string): Promise<unknown>;
-  /** DM reply to someone who messaged the account (24h window). */
-  sendDm(recipientId: string, text: string): Promise<unknown>;
+  privateReply(commentId: string, message: OutMessage): Promise<unknown>;
+  /** DM to someone who messaged the account or tapped a button (24h window). */
+  sendDm(recipientId: string, message: OutMessage): Promise<unknown>;
+  /**
+   * Does this person (a messaging id) follow the account? Only networks that can
+   * tell implement it, and only after the person has messaged or tapped a button.
+   */
+  follower?(userId: string): Promise<{ follows: boolean; username?: string }>;
   /** Public reply under a comment. */
   replyToComment(commentId: string, text: string): Promise<unknown>;
   unsubscribe(): Promise<unknown>;
@@ -78,6 +86,8 @@ export interface NetworkInfo {
   postNoun: string;
   /** Permission the login configuration needs for view counts. */
   viewsPermission: string;
+  /** Can a comment's DM carry a button ("tap first", "follow first")? */
+  buttons: boolean;
   /** Var holding this network's Meta login configuration id. */
   configId(env: Env): string | undefined;
   client(env: Env, account: Account): Client;
@@ -93,6 +103,7 @@ export const NETWORKS: Record<Network, NetworkInfo> = {
     postsTitle: "Reels and posts",
     postNoun: "Reel",
     viewsPermission: "instagram_manage_insights",
+    buttons: true,
     configId: (env) => env.IG_LOGIN_CONFIG_ID,
     client: instagramClient,
     connect: instagramConnect,
@@ -104,6 +115,9 @@ export const NETWORKS: Record<Network, NetworkInfo> = {
     postsTitle: "Posts",
     postNoun: "post",
     viewsPermission: "read_insights",
+    // Messenger has buttons too, but Pages can't tell who follows them, and the
+    // Page webhook isn't subscribed to button taps. Instagram only for now.
+    buttons: false,
     configId: (env) => env.FB_LOGIN_CONFIG_ID,
     client: facebookClient,
     connect: facebookConnect,

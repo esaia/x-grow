@@ -346,13 +346,21 @@ function activityList(events: EventRow[], home: string): SafeHtml {
         ? html`${e.ok ? "Replied" : "Couldn't reply"} under the comment for ${rule}`
         : e.kind === "comment_dm"
           ? html`<b>${who}</b> commented, ${e.ok ? "sent the DM" : "DM failed"} from ${rule}`
-          : html`<b>${who}</b> sent a DM, ${e.ok ? "replied" : "reply failed"} from ${rule}`;
+          : e.kind === "link_dm"
+            ? html`<b>${who}</b> tapped the button, ${e.ok ? "sent the link" : "link failed"} from ${rule}`
+            : e.kind === "follow_ask"
+              ? html`<b>${who}</b> doesn't follow yet, asked them to follow first for ${rule}`
+              : html`<b>${who}</b> sent a DM, ${e.ok ? "replied" : "reply failed"} from ${rule}`;
     return html`<div class="event">
   <span class="event-icon${e.ok ? "" : " bad"}">${e.kind === "public_reply" ? icon.reply : icon.dm}</span>
   <div style="min-width:0"><div class="event-line">${line}</div>
     ${e.text ? html`<div class="event-text">“${e.text}”</div>` : ""}
     ${e.actor ? html`<div class="small faint" style="margin-top:3px">Sent by ${e.actor} from past comments</div>` : ""}
-    ${e.ok ? "" : html`<div class="event-err">${e.error ?? "Unknown error"}</div>`}</div>
+    ${e.ok
+      ? e.error
+        ? html`<div class="small faint" style="margin-top:3px">${e.error}</div>`
+        : ""
+      : html`<div class="event-err">${e.error ?? "Unknown error"}</div>`}</div>
   <time datetime="${e.at}" title="${when(e.at)}">${ago(e.at)}</time>
 </div>`;
   })}</div>`;
@@ -372,9 +380,16 @@ const DEFAULTS: RuleInput = {
   ].join("\n"),
   anyComment: false,
   enabled: true,
+  buttonFirst: false,
+  opener: "Hey! Tap below and I'll send you the link 👇",
+  button: "Send me the link",
+  followFirst: false,
+  followText: "Looks like you're not following me yet 👀 Follow, then tap below and the link is yours.",
+  followButton: "I'm following",
 };
 
 function toInput(rule: StoredRule): RuleInput {
+  const g = rule.gate;
   return {
     name: rule.name,
     keywords: rule.keywords.join(", "),
@@ -383,6 +398,13 @@ function toInput(rule: StoredRule): RuleInput {
     publicReplies: rule.publicReplies.join("\n"),
     anyComment: rule.anyComment,
     enabled: rule.enabled,
+    // Switched off, the texts keep their defaults, so switching on starts from something.
+    buttonFirst: !!g,
+    opener: g?.opener ?? DEFAULTS.opener,
+    button: g?.button ?? DEFAULTS.button,
+    followFirst: !!g?.follow,
+    followText: g?.follow?.text ?? DEFAULTS.followText,
+    followButton: g?.follow?.button ?? DEFAULTS.followButton,
   };
 }
 
@@ -396,6 +418,12 @@ function readForm(form: FormData): RuleInput {
     publicReplies: s("publicReplies"),
     anyComment: form.has("anyComment"),
     enabled: form.has("enabled"),
+    buttonFirst: form.has("buttonFirst"),
+    opener: s("opener"),
+    button: s("button"),
+    followFirst: form.has("followFirst"),
+    followText: s("followText"),
+    followButton: s("followButton"),
   };
 }
 
@@ -413,6 +441,25 @@ function dmBubble(input: RuleInput): SafeHtml {
   const link = input.link.trim() || "https://…";
   const parts = dm.split("{link}");
   return html`${parts.map((p, i) => html`${p}${i < parts.length - 1 ? html`<span class="link">${link}</span>` : ""}`)}`;
+}
+
+/**
+ * The button steps of the preview, drawn when "Button first" is on. Without
+ * JavaScript the preview shows what was last saved or submitted, like the rest
+ * of it.
+ */
+function gatePreview(enabled: boolean, input: RuleInput, username: string): SafeHtml | string {
+  if (!enabled || !input.buttonFirst) return "";
+  const av = html`<span class="bubble-av">${username.slice(0, 1).toUpperCase()}</span>`;
+  const step = (text: string, button: string, fallback: string) => html`<div class="bubble-row">${av}
+    <div class="bubble">${text.trim() || fallback}<span class="bubble-btn">${button.trim() || "Button"}</span></div></div>
+  <div class="bubble-row me"><div class="bubble me">${button.trim() || "Button"}</div></div>`;
+  return html`${step(input.opener, input.button, DEFAULTS.opener)}
+  ${input.followFirst
+    ? html`<p class="small faint" style="margin:0">If they don't follow you yet:</p>
+  ${step(input.followText, input.followButton, DEFAULTS.followText)}
+  <p class="small faint" style="margin:0">Once they follow:</p>`
+    : ""}`;
 }
 
 async function ruleEditor(
@@ -520,6 +567,30 @@ ${aside}
       <span class="hint">Write <code>{link}</code> where the link goes. Each person gets this once per ${info.postNoun} every 30 days.</span>${err("dm")}</label>
   </div>
 
+  ${isReel && info.buttons
+      ? html`<div class="group gate"><p class="group-title">Button first</p>
+    <label class="switch"><span><b>Ask them to tap a button first</b><span class="hint">The DM is a short message with a button,
+      and the link comes when they tap it. Tapping opens the chat, so the link lands in their inbox rather than message requests.</span></span>
+      <input type="checkbox" name="buttonFirst" ${input.buttonFirst ? "checked" : ""}></label>
+    <div class="reveal">
+      <label class="${cls("opener")}"><span>Message with the button</span>
+        <textarea name="opener" maxlength="${LIMITS.opener}">${input.opener}</textarea>${err("opener")}</label>
+      <label class="${cls("button")}"><span>Button</span>
+        <input type="text" name="button" value="${input.button}" maxlength="${LIMITS.button}">
+        <span class="hint">Up to ${LIMITS.button} characters.</span>${err("button")}</label>
+      <label class="switch"><span><b>Only send the link to followers</b><span class="hint">When they tap, ${info.label} tells us
+        whether they follow you. If not, they get the message below with a button to tap once they do.</span></span>
+        <input type="checkbox" name="followFirst" ${input.followFirst ? "checked" : ""}></label>
+      <div class="reveal-follow">
+        <label class="${cls("followText")}"><span>Message if they don't follow</span>
+          <textarea name="followText" maxlength="${LIMITS.opener}">${input.followText}</textarea>${err("followText")}</label>
+        <label class="${cls("followButton")}"><span>Button</span>
+          <input type="text" name="followButton" value="${input.followButton}" maxlength="${LIMITS.button}">${err("followButton")}</label>
+      </div>
+    </div>
+  </div>`
+      : ""}
+
   ${isReel
       ? html`<div class="group"><p class="group-title">Public reply</p>
     <label class="${cls("publicReplies")}"><span>Replies under the comment</span>
@@ -538,6 +609,7 @@ ${aside}
       ? html`<div class="comment"><b>someone</b> ${sampleComment}</div>
   ${firstReply ? html`<div class="comment reply"><b>${account.username}</b> ${firstReply}</div>` : ""}`
       : ""}
+  ${gatePreview(isReel && info.buttons, input, account.username)}
   <div class="bubble-row"><span class="bubble-av">${account.username.slice(0, 1).toUpperCase()}</span>
     <div class="bubble">${dmBubble(input)}</div></div>
 </div>
@@ -570,7 +642,7 @@ ${rule
 
 async function saveNew(request: Request, env: Env, account: Account, mediaId: string | null, viewer: Viewer): Promise<Response> {
   const input = readForm(await request.formData());
-  const result = validateRule(input, mediaId !== null);
+  const result = validateRule(input, mediaId !== null, NETWORKS[account.network].buttons);
   if (!result.ok) return ruleEditor(env, account, { mediaId, input, errors: result.errors, status: 400 });
 
   let snapshot: { permalink?: string; caption?: string } = {};
@@ -593,7 +665,7 @@ async function saveNew(request: Request, env: Env, account: Account, mediaId: st
 
 async function saveExisting(request: Request, env: Env, account: Account, rule: StoredRule, viewer: Viewer): Promise<Response> {
   const input = readForm(await request.formData());
-  const result = validateRule(input, rule.mediaId !== null);
+  const result = validateRule(input, rule.mediaId !== null, NETWORKS[account.network].buttons);
   if (!result.ok) return ruleEditor(env, account, { rule, input, errors: result.errors, status: 400 });
   await updateRule(env, account, rule.id, result.rule, viewer.name);
   log.info("admin.rule_updated", { account: account.username, rule: result.rule.name });

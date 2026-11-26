@@ -3,7 +3,21 @@
  * matching. Pure functions; storage lives with each network (e.g.
  * instagram/db.ts), so this works for any network.
  */
+import type { OutMessage } from "../networks";
 import { matchKeywords, normalize, type KeywordHit } from "./match";
+
+/**
+ * "Tap a button first": the comment's DM is `opener` with one button, and the
+ * link comes when they tap it. Tapping opens the conversation, so we may send
+ * more than the one private reply, and (Instagram) ask Meta whether they
+ * follow the account. `follow` set → people who don't follow get `follow.text`
+ * with a button to tap once they do.
+ */
+export interface Gate {
+  opener: string;
+  button: string;
+  follow: { text: string; button: string } | null;
+}
 
 export interface Rule {
   id: number;
@@ -19,6 +33,8 @@ export interface Rule {
   /** true → every comment on the Reel gets the DM, keyword or not. */
   anyComment: boolean;
   enabled: boolean;
+  /** null → the comment's DM is the link itself. */
+  gate: Gate | null;
 }
 
 /** What a form submits, before validation. */
@@ -30,6 +46,14 @@ export interface RuleInput {
   publicReplies: string;
   anyComment: boolean;
   enabled: boolean;
+  /** "Ask them to tap a button first". */
+  buttonFirst: boolean;
+  opener: string;
+  button: string;
+  /** "Only send the link to followers". */
+  followFirst: boolean;
+  followText: string;
+  followButton: string;
 }
 
 export type RuleFields = Omit<Rule, "id" | "mediaId">;
@@ -43,15 +67,20 @@ export const LIMITS = {
   dm: 1000,
   publicReply: 300,
   publicReplies: 10,
+  /** Meta's button template: text up to 640 characters, button titles up to 20. */
+  opener: 640,
+  button: 20,
 };
 
 /**
  * Turns form input into a rule, or field → message errors. `isReel` turns
- * on the comment-only fields (any comment, public replies).
+ * on the comment-only fields (any comment, public replies); `buttons` (the
+ * network supports a button first) the gate.
  */
 export function validateRule(
   input: RuleInput,
   isReel: boolean,
+  buttons = false,
 ):
   | { ok: true; rule: RuleFields; merged: string[] }
   | { ok: false; errors: Record<string, string> } {
@@ -88,10 +117,32 @@ export function validateRule(
   else if (publicReplies.some((r) => r.length > LIMITS.publicReply))
     errors.publicReplies = `Each reply: at most ${LIMITS.publicReply} characters.`;
 
+  let gate: Gate | null = null;
+  if (isReel && buttons && input.buttonFirst) {
+    const opener = input.opener.trim();
+    const button = input.button.trim();
+    if (!opener) errors.opener = "Write the message that comes with the button.";
+    else if (opener.length > LIMITS.opener) errors.opener = `At most ${LIMITS.opener} characters.`;
+    if (!button) errors.button = "Give the button a label.";
+    else if (button.length > LIMITS.button) errors.button = `At most ${LIMITS.button} characters: Instagram cuts longer labels.`;
+
+    let follow: Gate["follow"] = null;
+    if (input.followFirst) {
+      const text = input.followText.trim();
+      const label = input.followButton.trim();
+      if (!text) errors.followText = "Write what people who don't follow you yet get.";
+      else if (text.length > LIMITS.opener) errors.followText = `At most ${LIMITS.opener} characters.`;
+      if (!label) errors.followButton = "Give the button a label.";
+      else if (label.length > LIMITS.button) errors.followButton = `At most ${LIMITS.button} characters: Instagram cuts longer labels.`;
+      follow = { text, button: label };
+    }
+    gate = { opener, button, follow };
+  }
+
   if (Object.keys(errors).length) return { ok: false, errors };
   return {
     ok: true,
-    rule: { name, keywords, link, dm, publicReplies, anyComment, enabled: input.enabled },
+    rule: { name, keywords, link, dm, publicReplies, anyComment, enabled: input.enabled, gate },
     merged,
   };
 }
@@ -136,6 +187,37 @@ function renderLength(dm: string, link: string): number {
 
 export function renderDm(rule: Pick<Rule, "dm" | "link">): string {
   return rule.dm.replaceAll("{link}", rule.link);
+}
+
+// ── Buttons ────────────────────────────────────────────────────────────────
+
+/** What a button sends back when tapped: which step, of which rule. */
+export type Postback = { step: "open" | "follow"; ruleId: number };
+
+export const postbackPayload = (p: Postback) => `sm:${p.step}:${p.ruleId}`;
+
+export function parsePostback(payload: string | undefined): Postback | null {
+  const m = payload?.match(/^sm:(open|follow):(\d+)$/);
+  return m ? { step: m[1] as Postback["step"], ruleId: Number(m[2]) } : null;
+}
+
+/** The comment's DM: the link, or the opener with its button. */
+export function firstMessage(rule: Pick<Rule, "id" | "dm" | "link" | "gate">): OutMessage {
+  if (!rule.gate) return renderDm(rule);
+  return {
+    text: rule.gate.opener,
+    buttons: [{ title: rule.gate.button, payload: postbackPayload({ step: "open", ruleId: rule.id }) }],
+  };
+}
+
+/** For someone who tapped but doesn't follow yet. Null when the rule doesn't ask. */
+export function followMessage(rule: Pick<Rule, "id" | "gate">): OutMessage | null {
+  const follow = rule.gate?.follow;
+  if (!follow) return null;
+  return {
+    text: follow.text,
+    buttons: [{ title: follow.button, payload: postbackPayload({ step: "follow", ruleId: rule.id }) }],
+  };
 }
 
 export function pickPublicReply(rule: Pick<Rule, "publicReplies">): string | null {

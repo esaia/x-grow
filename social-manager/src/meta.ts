@@ -86,6 +86,25 @@ export class GraphError extends Error {
   }
 }
 
+/**
+ * The `message` object of a Send API call. Buttons become a button template
+ * (up to 3 postback buttons under up to 640 characters of text), the same
+ * shape on Instagram and Messenger.
+ */
+export function messageBody(message: string | { text: string; buttons: { title: string; payload: string }[] }) {
+  if (typeof message === "string") return { text: message };
+  return {
+    attachment: {
+      type: "template",
+      payload: {
+        template_type: "button",
+        text: message.text,
+        buttons: message.buttons.map((b) => ({ type: "postback", title: b.title, payload: b.payload })),
+      },
+    },
+  };
+}
+
 type GraphErrorBody = {
   error?: { message?: string; code?: number; error_subcode?: number; fbtrace_id?: string };
 };

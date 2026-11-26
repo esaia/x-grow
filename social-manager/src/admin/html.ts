@@ -371,6 +371,13 @@ textarea{min-height:104px;resize:vertical;line-height:1.5}
 .bubble{max-width:100%;padding:10px 14px;border-radius:20px 20px 20px 6px;background:#262626;font-size:14px;line-height:1.45;
   white-space:pre-wrap;overflow-wrap:anywhere}
 .bubble .link{color:#8cb4ff;text-decoration:underline;text-underline-offset:2px}
+.bubble-btn{display:block;margin:10px -4px -2px;padding:9px 12px;border-radius:12px;background:#363636;text-align:center;font-weight:600}
+.bubble-row.me{justify-content:flex-end}
+.bubble.me{border-radius:20px 20px 6px 20px;background:#5b4cf0}
+/* "Button first": its fields show only while switched on (no script needed) */
+.gate:has(input[name=buttonFirst]:not(:checked)) .reveal,
+.gate:has(input[name=followFirst]:not(:checked)) .reveal-follow{display:none}
+.reveal,.reveal-follow{display:flex;flex-direction:column;gap:22px}
 .comment{font-size:13.5px;line-height:1.45}
 .comment b{font-weight:600}
 .comment.reply{margin-left:22px;padding-left:12px;border-left:1px solid var(--rule)}

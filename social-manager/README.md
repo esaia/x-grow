@@ -16,6 +16,16 @@ Someone comments **"christmas"** (or "Chrisstmas!! 🎄") on one of your Reels, 
 
 Someone DMs one of your accounts a keyword, and the Worker replies with that account's matching link.
 
+**Button first** (Instagram, optional per auto-reply): the comment's DM is a
+short message with a **"Send me the link"** button, and the link comes when
+they tap it. Tapping opens the conversation, so the link lands in their inbox
+rather than message requests. With **"Only send the link to followers"** on,
+the tap also asks Instagram whether they follow you (`is_user_follow_business`);
+if not, they get a "follow me first" message with an **"I'm following"** button,
+and tapping it checks again. If Instagram can't say, they get the link: a
+broken check never traps anyone. A keyword DM to a followers-only auto-reply
+gets the same check.
+
 ```
 you ──/admin──▶ "Connect account" ──▶ Meta login ──▶ /connect/instagram/callback
                                                      token saved per account (D1),
@@ -120,7 +130,10 @@ Then, under **3. Configure webhooks** on the Unified login page:
 1. **Callback URL:** `https://<worker>/webhooks/instagram`
 2. **Verify token:** your `IG_VERIFY_TOKEN`.
 3. Click **Verify and save**. `npm run tail` shows `instagram.webhook.verified`.
-4. Subscribe to the **`comments`** and **`messages`** fields.
+4. Subscribe to the **`comments`**, **`messages`** and **`messaging_postbacks`** fields.
+   `messaging_postbacks` carries button taps ("Button first"). Accounts connected
+   before it was added need one **Reconnect** in the panel, so their subscription
+   includes it.
 
 ### 5. Log in and connect your Instagram accounts
 
@@ -199,6 +212,7 @@ logs, and the same in the panel under **Recent activity**.
   - **Reconnect / Disconnect.**
 - **Rule editor:**
   - Fields: name, keywords, "reply to every comment", link, DM text (`{link}` marks where the link goes), public replies (one per line, picked at random), and an Active switch.
+  - **Button first** (Instagram): the message and label of the first DM's button, and "Only send the link to followers" with its own message and button. Button labels are at most 20 characters. The preview shows every step.
   - **Test a comment** checks text against the saved keywords without sending anything.
   - Saving is live immediately; there's nothing to deploy.
 
@@ -328,6 +342,12 @@ Filter with `npx wrangler tail --search instagram.comment`.
 | `instagram.comment.rate_limited_skipped` | Instagram throttled; skipped, not retried |
 | `instagram.comment.dm_failed` | another Graph error; `error.message` and `fbtrace_id` say why |
 | `instagram.dm.sent` / `.no_match` / `.skip_own` | the same, for DMs |
+| `instagram.dm.follow_asked` | a keyword DM to a followers-only auto-reply, from someone who doesn't follow |
+| `instagram.button.link_sent` / `.follow_asked` | someone tapped a button: got the link, or was asked to follow first |
+| `instagram.button.rule_disabled` / `.rule_gone` / `.not_ours` | a tap for a paused or deleted auto-reply, or a button we didn't send; nothing is sent |
+| `instagram.button.failed` | sending after a tap failed; `error` says why |
+| `follow_check_failed` | Instagram couldn't say whether they follow; they got the link anyway |
+| `comment.button_refused_sent_link` | Meta refused the button in a private reply, so the link went as plain text |
 | `instagram.webhook.unknown_account` | an event for an account that isn't connected (Meta's "Test" button lands here too) |
 | `instagram.signature.invalid` | wrong `META_APP_SECRET`; see the note in step 3 |
 | `admin.login` / `admin.login_failed` / `admin.rule_*` | admin panel actions |

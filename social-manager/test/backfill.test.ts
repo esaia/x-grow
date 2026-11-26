@@ -12,6 +12,7 @@ const rule = {
   keywords: ["template"],
   anyComment: false,
   enabled: true,
+  gate: null,
   link: "https://x",
   dm: "{link}",
   publicReplies: [],

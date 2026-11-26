@@ -70,6 +70,14 @@ The panel uses llamapresenter.com's dark site theme, taken from its CSS: `site-*
 
 Views come from `/{media-id}/insights?metric=views`, which needs `instagram_manage_insights` in the login configuration. Without it the panel shows "–" and a hint, while likes and comment counts (media fields) always work.
 
+## Button first / followers only (Instagram)
+
+- A rule's `gate` (JSON column, migration 0004) makes the comment's private reply a button template. A tap arrives as a `messaging_postbacks` webhook with payload `sm:<open|follow>:<ruleId>` → `handlePostback`.
+- The follow check (`Client.follower`, `GET /{igsid}?fields=is_user_follow_business`) only works after the person messaged or tapped (their consent), so it runs on the tap, never on the comment.
+- **It fails open:** if the check errors, they get the link. Don't make it fail closed; that loops people on "follow me".
+- **Button refused → plain-text link** (`sendFirstDm`): Meta's private-reply docs only show text, so a refused template must not cost anyone their DM. Account-wide errors are not retried.
+- Facebook has `buttons: false`: Pages can't tell followers, and the Page webhook isn't subscribed to postbacks.
+
 ## Facebook Pages
 
 - **Login:** a separate Facebook Login for Business configuration (Page assets, `FB_LOGIN_CONFIG_ID`). `/me/accounts` turns the system-user token into Page tokens, with `/me/assigned_pages` as a fallback.

@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { matchComment, matchDm, pickPublicReply, renderDm, validateRule, type Rule, type RuleInput } from "../src/autoreply/rules";
+import {
+  firstMessage,
+  followMessage,
+  matchComment,
+  matchDm,
+  parsePostback,
+  pickPublicReply,
+  postbackPayload,
+  renderDm,
+  validateRule,
+  type Rule,
+  type RuleInput,
+} from "../src/autoreply/rules";
+import { messageBody } from "../src/meta";
 
 const input = (over: Partial<RuleInput> = {}): RuleInput => ({
   name: "Christmas",
@@ -9,6 +22,12 @@ const input = (over: Partial<RuleInput> = {}): RuleInput => ({
   publicReplies: "Sent! 📩\nDone 📩",
   anyComment: false,
   enabled: true,
+  buttonFirst: false,
+  opener: "Tap below 👇",
+  button: "Send me the link",
+  followFirst: false,
+  followText: "Follow me first",
+  followButton: "I'm following",
   ...over,
 });
 
@@ -22,6 +41,7 @@ const rule = (over: Partial<Rule> = {}): Rule => ({
   publicReplies: [],
   anyComment: false,
   enabled: true,
+  gate: null,
   ...over,
 });
 
@@ -38,6 +58,7 @@ describe("validateRule", () => {
         publicReplies: ["Sent! 📩", "Done 📩"],
         anyComment: false,
         enabled: true,
+        gate: null,
       },
       merged: ["Christmas", "XMAS"],
     });
@@ -116,5 +137,66 @@ describe("GraphError advice", () => {
   });
   it("passes other errors through", () => {
     expect(new GraphError(400, 100, undefined, "Invalid parameter", undefined).advice).toBe("Invalid parameter");
+  });
+});
+
+describe("button first", () => {
+  const gate = { opener: "Tap below 👇", button: "Send me the link", follow: { text: "Follow me first", button: "I'm following" } };
+
+  it("saves the gate only for a Reel, on a network with buttons, when switched on", () => {
+    const on = input({ buttonFirst: true, followFirst: true });
+    const r = validateRule(on, true, true);
+    expect(r.ok && r.rule.gate).toEqual(gate);
+    expect(validateRule(input({ buttonFirst: true, followFirst: false }), true, true)).toMatchObject({
+      ok: true,
+      rule: { gate: { ...gate, follow: null } },
+    });
+    expect(validateRule(on, true, false)).toMatchObject({ ok: true, rule: { gate: null } }); // Facebook
+    expect(validateRule(on, false, true)).toMatchObject({ ok: true, rule: { gate: null } }); // DM keyword
+    expect(validateRule(input(), true, true)).toMatchObject({ ok: true, rule: { gate: null } });
+  });
+
+  it("needs the texts and keeps button labels to 20 characters", () => {
+    const r = validateRule(
+      input({ buttonFirst: true, followFirst: true, opener: " ", button: "x".repeat(21), followText: "", followButton: "" }),
+      true,
+      true,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(Object.keys(r.errors).sort()).toEqual(["button", "followButton", "followText", "opener"]);
+    // The follow fields don't matter while "followers only" is off.
+    expect(validateRule(input({ buttonFirst: true, followText: "", followButton: "" }), true, true).ok).toBe(true);
+  });
+
+  it("first DM: the link without a gate, the opener with its button with one", () => {
+    expect(firstMessage(rule({ id: 7, dm: "Here {link}", link: "L" }))).toBe("Here L");
+    expect(firstMessage(rule({ id: 7, gate }))).toEqual({
+      text: "Tap below 👇",
+      buttons: [{ title: "Send me the link", payload: "sm:open:7" }],
+    });
+  });
+
+  it("follow message only when the rule asks for followers", () => {
+    expect(followMessage(rule({ id: 7, gate: { ...gate, follow: null } }))).toBeNull();
+    expect(followMessage(rule({ id: 7, gate }))).toEqual({
+      text: "Follow me first",
+      buttons: [{ title: "I'm following", payload: "sm:follow:7" }],
+    });
+  });
+
+  it("reads back only our own button payloads", () => {
+    expect(parsePostback(postbackPayload({ step: "open", ruleId: 12 }))).toEqual({ step: "open", ruleId: 12 });
+    expect(parsePostback("sm:follow:3")).toEqual({ step: "follow", ruleId: 3 });
+    for (const bad of [undefined, "", "GET_STARTED", "sm:open:", "sm:open:1x", "sm:delete:1"]) expect(parsePostback(bad)).toBeNull();
+  });
+
+  it("sends buttons as Meta's button template", () => {
+    expect(messageBody("hi")).toEqual({ text: "hi" });
+    expect(messageBody({ text: "Tap", buttons: [{ title: "Go", payload: "sm:open:1" }] })).toEqual({
+      attachment: {
+        type: "template",
+        payload: { template_type: "button", text: "Tap", buttons: [{ type: "postback", title: "Go", payload: "sm:open:1" }] },
+      },
+    });
   });
 });

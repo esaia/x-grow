@@ -5,8 +5,10 @@
  *   entry[].changes[] "comments"  value.comment_id (Unified Login) or value.id,
  *                                 value.from{id,username}, value.media.id, value.text
  *   entry[].messaging[]           sender.id, message.{mid,text,is_echo,is_self,...}
+ *                                 or postback.{mid,title,payload} (a button tap,
+ *                                 webhook field messaging_postbacks)
  */
-import { accountFor, guard, handleComment, handleDm } from "../autoreply/handle";
+import { accountFor, guard, handleComment, handleDm, handlePostback } from "../autoreply/handle";
 import type { Env } from "../env";
 import { log } from "../log";
 import { NETWORKS } from "../networks";
@@ -27,6 +29,8 @@ interface Payload {
     }[];
     messaging?: {
       sender?: { id?: string };
+      timestamp?: number;
+      postback?: { mid?: string; title?: string; payload?: string };
       message?: {
         mid?: string;
         text?: string;
@@ -69,6 +73,15 @@ export async function processInstagram(raw: unknown, env: Env): Promise<void> {
     }
 
     for (const m of entry.messaging ?? []) {
+      if (m.postback && m.sender?.id) {
+        const tap = m.postback;
+        // The mid makes a redelivery a no-op; should one ever be missing, the tap's own time does.
+        const mid = tap.mid ?? `postback:${m.sender.id}:${m.timestamp ?? ""}:${tap.payload ?? ""}`;
+        await guard("button", account, () =>
+          handlePostback(env, account, { mid, senderId: m.sender!.id!, payload: tap.payload, title: tap.title }),
+        );
+        continue;
+      }
       const msg = m.message;
       if (!msg?.mid || !m.sender?.id) {
         log.info("instagram.dm.non_message_event", { account: account.username, keys: Object.keys(m) });

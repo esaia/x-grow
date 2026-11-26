@@ -7,6 +7,7 @@
  *   npm run webhook -- comment "chrisstmas please 🎄"
  *   npm run webhook -- comment "hello" --media 17890000000000000 --user 111
  *   npm run webhook -- dm "xmas"
+ *   npm run webhook -- tap sm:open:1   someone taps a "Send me the link" button (rule 1)
  *   npm run webhook -- verify          GET subscription check
  *   npm run webhook -- bad-signature   must come back 401
  *
@@ -125,6 +126,27 @@ switch (command) {
               recipient: { id: igUserId },
               timestamp: Date.now(),
               message: { mid: `aWdf${rand()}`, text: opts._[0] ?? "xmas" },
+            },
+          ],
+        },
+      ],
+    });
+    break;
+
+  case "tap":
+    // A button tap (webhook field messaging_postbacks). The payload names the step and rule.
+    await post({
+      object: "instagram",
+      entry: [
+        {
+          id: igUserId,
+          time: Date.now(),
+          messaging: [
+            {
+              sender: { id: opts.user ?? `66${rand()}` },
+              recipient: { id: igUserId },
+              timestamp: Date.now(),
+              postback: { mid: `aWdf${rand()}`, title: "Send me the link", payload: opts._[0] ?? "sm:open:1" },
             },
           ],
         },
