@@ -15,6 +15,7 @@
  */
 import { currentViewer, handleLogin, handleLogout, loginPage, sameOrigin, type Viewer } from "./admin/auth";
 import { VIEWER_SLOT, redirect, viewerNav } from "./admin/html";
+import { handleSettings } from "./admin/settings-panel";
 import { handleAccount, handleUsers } from "./admin/users-panel";
 import { trimFailures } from "./admin/users";
 import { handleApi } from "./autoreply/api";
@@ -99,6 +100,7 @@ async function route(
   if (path === "/admin") return redirect("/admin/instagram");
   if (parts[1] === "users") return handleUsers(request, url, env, viewer);
   if (path === "/admin/account") return handleAccount(request, url, env, viewer);
+  if (path === "/admin/settings") return handleSettings(request, url, env, viewer);
 
   const network = api ? parts[2] : parts[1];
   if (network && isNetwork(network)) {

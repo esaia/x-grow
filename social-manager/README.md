@@ -214,6 +214,8 @@ logs, and the same in the panel under **Recent activity**.
   - Fields: name, keywords, "reply to every comment", link, DM text (`{link}` marks where the link goes), public replies (one per line, picked at random), and an Active switch.
   - **Button first** (Instagram): the message and label of the first DM's button, and "Only send the link to followers" with its own message and button. Button labels are at most 20 characters. The preview shows every step.
   - **Test a comment** checks text against the saved keywords without sending anything.
+  - The **What they get** preview sits under the post on the left.
+- **Settings** (owners): the texts every new auto-reply starts with (link, DM, public replies, Button first). Saved auto-replies keep their own texts. **Reset to built-in texts** restores the originals. Stored in the `settings` table (migration 0005).
   - Saving is live immediately; there's nothing to deploy.
 
 The panel is server-rendered HTML with no JavaScript. Its CSP forbids

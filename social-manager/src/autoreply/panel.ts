@@ -36,6 +36,7 @@ import {
   type EventRow,
   type StoredRule,
 } from "./db";
+import { BUILT_IN, ruleDefaults, type RuleDefaults } from "./defaults";
 import { matchComment, validateRule, LIMITS, type RuleInput } from "./rules";
 
 const baseOf = (n: Network) => `/admin/${n}`;
@@ -389,27 +390,10 @@ function activityList(events: EventRow[], home: string): SafeHtml {
 
 // ── Rule editor ─────────────────────────────────────────────────────────────
 
-const DEFAULTS: RuleInput = {
-  name: "",
-  keywords: "",
-  link: "",
-  dm: "Here's the link you asked for 👇\n{link}",
-  publicReplies: [
-    "Sent! 📩 Check your DMs (or message requests)",
-    "Just sent it 📩 Look in your message requests",
-    "Done! 📩 It's in your DMs",
-  ].join("\n"),
-  anyComment: false,
-  enabled: true,
-  buttonFirst: false,
-  opener: "Hey! Tap below and I'll send you the link 👇",
-  button: "Send me the link",
-  followFirst: false,
-  followText: "Looks like you're not following me yet 👀 Follow, then tap below and the link is yours.",
-  followButton: "I'm following",
-};
+/** Fallbacks for an emptied field in the preview. New auto-replies start from `ruleDefaults` (Settings). */
+const DEFAULTS = BUILT_IN;
 
-function toInput(rule: StoredRule): RuleInput {
+function toInput(rule: StoredRule, defaults: RuleDefaults): RuleInput {
   const g = rule.gate;
   return {
     name: rule.name,
@@ -421,11 +405,11 @@ function toInput(rule: StoredRule): RuleInput {
     enabled: rule.enabled,
     // Switched off, the texts keep their defaults, so switching on starts from something.
     buttonFirst: !!g,
-    opener: g?.opener ?? DEFAULTS.opener,
-    button: g?.button ?? DEFAULTS.button,
+    opener: g?.opener ?? defaults.opener,
+    button: g?.button ?? defaults.button,
     followFirst: !!g?.follow,
-    followText: g?.follow?.text ?? DEFAULTS.followText,
-    followButton: g?.follow?.button ?? DEFAULTS.followButton,
+    followText: g?.follow?.text ?? defaults.followText,
+    followButton: g?.follow?.button ?? defaults.followButton,
   };
 }
 
@@ -504,9 +488,19 @@ async function ruleEditor(
   const loaded = mediaId ? await loadMedia(env, account, mediaId) : null;
   const media = loaded && "media" in loaded ? loaded.media : undefined;
   const caption = media?.caption ?? rule?.caption ?? "";
-  const input =
+  const defaults = opts.input ? BUILT_IN : await ruleDefaults(env);
+  const input: RuleInput =
     opts.input ??
-    (rule ? toInput(rule) : { ...DEFAULTS, name: firstLine(caption), publicReplies: isReel ? DEFAULTS.publicReplies : "" });
+    (rule
+      ? toInput(rule, defaults)
+      : {
+          ...defaults,
+          name: firstLine(caption),
+          keywords: "",
+          anyComment: false,
+          enabled: true,
+          publicReplies: isReel ? defaults.publicReplies : "",
+        });
   const errors = opts.errors ?? {};
   const err = (k: string) => (errors[k] ? html`<span class="err">${errors[k]}</span>` : "");
   const cls = (k: string) => (errors[k] ? "field has-error" : "field");
@@ -515,6 +509,20 @@ async function ruleEditor(
   const permalink = media?.permalink ?? rule?.permalink;
   const thumb = thumbOf(media);
   const sent = rule ? ((await sentCountsByRule(env, account)).get(rule.id) ?? 0) : 0;
+
+  const firstReply = input.publicReplies.split("\n").map((l) => l.trim()).find(Boolean);
+  const sampleComment = input.anyComment ? "Love this 🔥" : (input.keywords.split(",")[0]?.trim() || "your keyword");
+  // What the commenter sees, under the post on the left, so the post and its reply read together.
+  const convo = html`<div class="convo">
+  <span class="convo-label">What they get</span>
+  ${isReel
+      ? html`<div class="comment"><b>someone</b> ${sampleComment}</div>
+  ${firstReply ? html`<div class="comment reply"><b>${account.username}</b> ${firstReply}</div>` : ""}`
+      : ""}
+  ${gatePreview(isReel && info.buttons, input, account.username)}
+  <div class="bubble-row"><span class="bubble-av">${account.username.slice(0, 1).toUpperCase()}</span>
+    <div class="bubble">${dmBubble(input)}</div></div>
+</div>`;
 
   const aside = isReel
     ? html`<aside class="aside">
@@ -531,10 +539,12 @@ async function ruleEditor(
     ${captionBlock(caption)}
     ${loaded && "error" in loaded ? html`<p class="err">Couldn't load this post: ${loaded.error}</p>` : ""}
   </div>
+  ${convo}
 </aside>`
     : html`<aside class="aside"><div class="panel flat"><span class="rule-thumb dm" style="margin-bottom:16px">${icon.dm}</span>
   <p style="margin:0" class="muted">A DM keyword answers direct messages only. Keywords on your ${info.postNoun}s already work in
-  DMs too, so use this for words that have no ${info.postNoun}.</p></div></aside>`;
+  DMs too, so use this for words that have no ${info.postNoun}.</p></div>
+  ${convo}</aside>`;
 
   let verdict: SafeHtml | string = "";
   if (rule && opts.tryText) {
@@ -546,8 +556,6 @@ async function ruleEditor(
       : html`<p class="verdict"><span class="dot dot-off"></span>No keyword found. This comment wouldn't get the DM.</p>`;
   }
 
-  const firstReply = input.publicReplies.split("\n").map((l) => l.trim()).find(Boolean);
-  const sampleComment = input.anyComment ? "Love this 🔥" : (input.keywords.split(",")[0]?.trim() || "your keyword");
 
   return page(
     title,
@@ -623,17 +631,6 @@ ${aside}
   <div class="actions"><button class="btn btn-accent" data-pending="Saving…" data-label="${rule ? "Save changes" : "Create auto-reply"}">${rule ? "Save changes" : "Create auto-reply"}</button>
     <a class="btn btn-ghost" href="${home}">Cancel</a></div>
 </form>
-
-<div class="convo">
-  <span class="convo-label">What they get</span>
-  ${isReel
-      ? html`<div class="comment"><b>someone</b> ${sampleComment}</div>
-  ${firstReply ? html`<div class="comment reply"><b>${account.username}</b> ${firstReply}</div>` : ""}`
-      : ""}
-  ${gatePreview(isReel && info.buttons, input, account.username)}
-  <div class="bubble-row"><span class="bubble-av">${account.username.slice(0, 1).toUpperCase()}</span>
-    <div class="bubble">${dmBubble(input)}</div></div>
-</div>
 
 ${rule && rule.mediaId
       ? html`<div class="panel flat" style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">

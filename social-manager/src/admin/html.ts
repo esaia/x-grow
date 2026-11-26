@@ -114,7 +114,7 @@ export const VIEWER_SLOT = "<!--sm:viewer-->";
 export function viewerNav(v: { name: string; owner: boolean }, path: string): string {
   const link = (href: string, label: string) =>
     html`<a class="nav-link${path.startsWith(href) ? " is-current" : ""}" href="${href}">${label}</a>`.value;
-  return (v.owner ? link("/admin/users", "People") : "") + link("/admin/account", v.name);
+  return (v.owner ? link("/admin/settings", "Settings") + link("/admin/users", "People") : "") + link("/admin/account", v.name);
 }
 
 export function redirect(location: string, headers: HeadersInit = {}): Response {
@@ -322,7 +322,10 @@ h2{margin:0;font-size:21px;font-weight:700;letter-spacing:-.025em}
 
 /* ── rule editor ────────────────────────────────────────────────────────── */
 .editor{display:grid;grid-template-columns:300px minmax(0,1fr);gap:36px;align-items:start}
-.aside{position:sticky;top:96px;display:flex;flex-direction:column;gap:18px}
+/* not sticky: with the DM preview under the post it is taller than the screen */
+.aside{display:flex;flex-direction:column;gap:18px}
+.aside .convo{padding:16px;gap:12px}
+.aside .bubble{font-size:13.5px}
 .aside .phone{border-radius:26px;box-shadow:var(--frame)}
 .aside .cap{color:var(--muted);font-size:13.5px;line-height:1.5;white-space:pre-line;max-height:8.2em;overflow:hidden;
   -webkit-mask-image:linear-gradient(#000 70%,transparent);mask-image:linear-gradient(#000 70%,transparent)}
@@ -407,6 +410,7 @@ details.danger[open] summary{margin-bottom:14px}
 @media (max-width:860px){
   .editor{grid-template-columns:minmax(0,1fr)}
   .aside{position:static;display:grid;grid-template-columns:140px minmax(0,1fr);align-items:start}
+  .aside .convo{grid-column:1/-1}
   .rule-row{grid-template-columns:44px minmax(0,1fr) auto;gap:14px}
   .rule-row .kw,.rule-row .count{display:none}
   .rule-thumb{width:44px;height:58px}
