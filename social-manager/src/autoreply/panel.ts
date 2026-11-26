@@ -231,7 +231,7 @@ async function accountPage(url: URL, env: Env, account: Account, viewer: Viewer,
         : ""}</div>`;
 
   const rulesList = rules.length
-    ? html`<div class="list">${rules.map((r) => ruleRow(home, r, counts, r.mediaId ? mediaById.get(r.mediaId) : undefined, info.postNoun))}</div>`
+    ? html`<div class="list">${newestFirst(rules, mediaById).map((r) => ruleRow(home, r, counts, r.mediaId ? mediaById.get(r.mediaId) : undefined, info.postNoun))}</div>`
     : html`<div class="panel empty"><h2>No auto-replies yet</h2>
   <p>Pick a ${info.postNoun} below to answer its comments, or add a keyword that answers DMs.</p></div>`;
 
@@ -285,6 +285,27 @@ ${viewer.owner
       : ""}`,
     { flash, ...section(account.network) },
   );
+}
+
+/**
+ * Auto-replies in the order their posts were published, newest first, like the
+ * grid below. A post's date is only known when it is in the loaded page of
+ * posts; those older than that follow, newest rule first, then DM keywords.
+ * Display only: DM keyword ties are still broken oldest rule first (listRules).
+ */
+export function newestFirst<R extends Pick<StoredRule, "mediaId" | "createdAt">>(
+  rules: R[],
+  mediaById: Map<string, Pick<Post, "timestamp">>,
+): R[] {
+  const rank = (r: R): [number, string] => {
+    if (!r.mediaId) return [2, r.createdAt];
+    const posted = mediaById.get(r.mediaId)?.timestamp;
+    return posted ? [0, new Date(posted).toISOString()] : [1, r.createdAt];
+  };
+  return rules
+    .map((r) => ({ r, k: rank(r) }))
+    .sort((a, b) => a.k[0] - b.k[0] || (a.k[1] < b.k[1] ? 1 : a.k[1] > b.k[1] ? -1 : 0))
+    .map((x) => x.r);
 }
 
 function thumbOf(m: Post | undefined): string | undefined {
