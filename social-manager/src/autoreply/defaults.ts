@@ -12,10 +12,13 @@ export type RuleDefaults = Omit<RuleInput, "name" | "keywords" | "anyComment" | 
 export const BUILT_IN: RuleDefaults = {
   link: "",
   dm: "Here's the link you asked for 👇\n{link}",
+  // Short and varied, so a busy Reel's replies don't read like a bot.
   publicReplies: [
-    "Sent! 📩 Check your DMs (or message requests)",
-    "Just sent it 📩 Look in your message requests",
-    "Done! 📩 It's in your DMs",
+    "Just sent it to your DMs 🙌",
+    "Check your inbox 👀",
+    "Sent you a DM!",
+    "It's in your messages ✨",
+    "DM'd you! If you can't see it, check message requests",
   ].join("\n"),
   buttonFirst: false,
   opener: "Hey! Tap below and I'll send you the link 👇",
